@@ -58,6 +58,12 @@ If you don't want to store the config in the repo, put it elsewhere and point to
 it with `--config`. Alternatively you can run Limmat from a different directory
 and point to the repository with `--repo`.
 
+> [!TIP]
+> By default, Limmat creates worktrees in your system's default temp directory.
+> If this is on `tmpfs` and your project is large, you might see "No space left
+> on device" errors. You can avoid this by setting `--worktree-dir` to point to
+> a disk-backed filesystem, for example `--worktree-dir /var/tmp/limmat`.
+
 ## Configuration
 
 > [!TIP]

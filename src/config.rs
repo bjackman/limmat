@@ -231,11 +231,19 @@ impl Config {
             .collect()
     }
 
-    fn parse_tests(
+    fn parse_tests<'a>(
         &self,
         resource_tokens: &ResourceTokens,
+        skip_tests: impl IntoIterator<Item = &'a str>,
     ) -> anyhow::Result<Dag<Arc<test::Test>>> {
-        let tests = Dag::new(self.tests.clone()).context("parsing test dependency graph")?;
+        let skip_tests: HashSet<&'a str> = skip_tests.into_iter().collect();
+        let tests = Dag::new(
+            self.tests
+                .iter()
+                .filter(|t| !skip_tests.contains(t.name.as_str()))
+                .map(|t| t.clone()),
+        )
+        .context("parsing test dependency graph")?;
         // This is beginning to be kinda cool, we can map between DAGs of
         // different types of objects.  It's still kinda awkward that users of
         // this fold mechanism have to manually insert their new nodes into the
@@ -247,7 +255,7 @@ impl Config {
             .bottom_up()
             .try_fold(
                 Dag::empty(),
-                |parsed_dag, test_conf| -> anyhow::Result<Dag<Arc<test::Test>>> {
+                |parsed_dag, test_conf: &Test| -> anyhow::Result<Dag<Arc<test::Test>>> {
                     let new_node = Arc::new(test_conf.parse(&parsed_dag)?);
                     Ok(parsed_dag.with_node(new_node).unwrap())
                 },
@@ -290,9 +298,13 @@ pub struct ParsedConfig {
 }
 
 impl ParsedConfig {
-    pub fn new(config: Config, source_path: impl Into<PathBuf>) -> anyhow::Result<Self> {
+    pub fn new<'a>(
+        config: Config,
+        source_path: impl Into<PathBuf>,
+        skip_tests: impl IntoIterator<Item = &'a str>,
+    ) -> anyhow::Result<Self> {
         let resource_tokens = config.parse_resource_tokens();
-        let tests = config.parse_tests(&resource_tokens)?;
+        let tests = config.parse_tests(&resource_tokens, skip_tests)?;
         let resources: HashMap<ResourceKey, Vec<resource::Resource>> = resource_tokens
             .into_iter()
             .map(|(key, tokens)| {
@@ -363,7 +375,7 @@ mod tests {
         );
         for toml in toml_blocks {
             expect_that!(
-                toml::from_str(toml).map(|config| ParsedConfig::new(config, "/fake/path")),
+                toml::from_str(toml).map(|config| ParsedConfig::new(config, "/fake/path", vec![])),
                 ok(anything())
             );
         }

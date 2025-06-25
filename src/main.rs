@@ -75,6 +75,8 @@ struct Args {
     /// Git binary - default will use $PATH.
     #[arg(long, default_value_t = {DisplayablePathBuf("git".into())}, global = true)]
     git_binary: DisplayablePathBuf,
+    #[arg(long, global = true)]
+    skip_test: Vec<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -710,7 +712,11 @@ async fn do_main() -> anyhow::Result<ExitCode> {
     let config_content = fs::read_to_string(&config_path).context("couldn't read config")?;
     debug!("config:\n{}", &config_content);
     let config: Config = toml::from_str(&config_content).context("couldn't parse config")?;
-    let config = ParsedConfig::new(config, config_path)?;
+    let config = ParsedConfig::new(
+        config,
+        config_path,
+        args.skip_test.iter().map(|s| s.as_str()),
+    )?;
 
     let repo = git::PersistentWorktree {
         path: args.repo.to_owned().into(),

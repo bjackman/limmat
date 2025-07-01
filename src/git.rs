@@ -244,7 +244,7 @@ trait WorktreePriv: Worktree {
         S: AsRef<OsStr>,
     {
         (async {
-            let mut cmd = Command::new("git");
+            let mut cmd = Command::new(self.git_binary());
             cmd.current_dir(self.path());
             cmd.args([
                 "-c",
@@ -566,7 +566,7 @@ impl TempWorktree {
         // actually desirable, if it gets to that point the user probably
         // just want us to fuck off and give them their terminal back at
         // whatever cost.
-        let mut cmd = SyncCommand::new("git");
+        let mut cmd = SyncCommand::new(&self.git_binary());
         // Double --force means remove it even if we were in the middle of
         // creating it.
         cmd.args(["worktree", "remove", "--force", "--force"])

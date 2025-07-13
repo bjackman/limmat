@@ -925,3 +925,47 @@ async fn error_exit_code_tests() {
         "Erroring test not re-ran?"
     );
 }
+
+#[googletest::test]
+#[tokio::test]
+async fn skip_test() {
+    let temp_dir = TempDir::new().unwrap();
+    let builder = LimmatChildBuilder::new(format!(
+        r##"
+            [[tests]]
+            name = "test-a"
+            command = "echo >> {0}/ran-a"
+
+            [[tests]]
+            name = "test-b"
+            command = "echo hello world"
+        "##,
+        temp_dir.path().display(),
+    ))
+    .await
+    .unwrap();
+
+    let child = builder
+        .start(["watch", "HEAD^", "--skip-test", "test-a"])
+        .await
+        .unwrap();
+
+    // To try and detect if it's running something it shouldn't we'll just wait until it ran
+    // something it should... then a bit longer.
+    timeout(
+        Duration::from_secs(5),
+        child.result_exists("test-b", "HEAD"),
+    )
+    .await
+    .expect("result not found after 5s")
+    .expect("failed to check for test result");
+
+    let result = timeout(
+        Duration::from_secs(1),
+        child.result_exists("test-a", "HEAD"),
+    )
+    .await;
+    // The only error type that timeout can return is the timeout itself. (A failure of the future
+    // will return an inner error).
+    assert_that!(result, err(anything()));
+}

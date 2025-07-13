@@ -241,7 +241,7 @@ impl Config {
             self.tests
                 .iter()
                 .filter(|t| !skip_tests.contains(t.name.as_str()))
-                .map(|t| t.clone()),
+                .cloned(),
         )
         .context("parsing test dependency graph")?;
         // This is beginning to be kinda cool, we can map between DAGs of

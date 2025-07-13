@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/bjackman/limmat/compare/v0.2.5...v0.2.6) - 2025-07-13
+
+### Added
+
+- Add --skip-test arg
+
+### Fixed
+
+- Don't ignore git_binary setting
+
+### Other
+
+- Add Initial flake
+- Add tip on setting --worktree-dir
+- Fix README typo
+- Add limmat-kernel link
+
 ## [0.2.5](https://github.com/bjackman/limmat/compare/v0.2.4...v0.2.5) - 2025-01-26
 
 ### Fixed

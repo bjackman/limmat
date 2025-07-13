@@ -31,9 +31,10 @@
             naersk = pkgs.callPackage inputs.naersk { };
           in
           {
-            default = naersk.buildPackage {
+            limmat = naersk.buildPackage {
               src = ./.;
             };
+            default = limmat;
           }
         );
     };

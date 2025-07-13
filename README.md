@@ -28,6 +28,15 @@ Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) then:
 cargo install limmat
 ```
 
+### Via Nix
+
+[Install Nix](https://nixos.org/download/) then use the default output of the flake defined in this
+repository, for example:
+
+```sh
+nix run github:bjackman/limmat -- --help
+```
+
 ### From GitHub Releases
 
 There are pre-built Linux x86 binaries in the [latest GitHub

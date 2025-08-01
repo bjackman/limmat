@@ -30,7 +30,7 @@
             pkgs = import nixpkgs { inherit system; };
             naersk = pkgs.callPackage inputs.naersk { };
           in
-          {
+          rec {
             limmat = naersk.buildPackage {
               src = ./.;
             };

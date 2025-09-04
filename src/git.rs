@@ -644,7 +644,7 @@ pub mod test_utils {
             // https://www.youtube.com/watch?v=_MwboA5NIVA
             let zelf = Self {
                 temp_dir: TempDir::with_prefix("fixture-").expect("couldn't make tempdir"),
-                git_binary: PathBuf::from("/usr/bin/git"),
+                git_binary: PathBuf::from("git"),
             };
             zelf.git(["init"]).await.execute().await?;
             Ok(zelf)
@@ -713,7 +713,7 @@ mod tests {
         let tmp_dir = TempDir::new().expect("couldn't make tempdir");
         let wt = PersistentWorktree {
             path: tmp_dir.path().to_path_buf(),
-            git_binary: PathBuf::from("/usr/bin/git"),
+            git_binary: PathBuf::from("git"),
         };
         assert!(
             wt.git_common_dir().await.is_err(),
@@ -731,7 +731,7 @@ mod tests {
         }
         let wt = PersistentWorktree {
             path: tmp_dir.path().to_path_buf(),
-            git_binary: PathBuf::from("/usr/bin/git"),
+            git_binary: PathBuf::from("git"),
         };
         assert!(
             wt.git_common_dir().await.is_err(),

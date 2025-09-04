@@ -574,7 +574,11 @@ async fn test(
         .run_with(env.repo.path(), &resources, output, dep_db_entries)
         .await?;
     eprintln!("Finished: {}", db_entry.result());
-    Ok(())
+    if db_entry.result().exit_code == 0 {
+        Ok(())
+    } else {
+        bail!("Test failed with exit code {}", db_entry.result().exit_code)
+    }
 }
 
 // Returns Ok(None) if nothing found and --run wasn't set.

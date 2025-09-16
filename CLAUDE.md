@@ -6,6 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Limmat is a Rust-based tool for local automated testing of Git branches. It watches Git repositories for changes and runs tests on every commit in parallel, providing a live web and terminal UI for test results.
 
+## Coding style
+
+Don't add any unused code.
+
+Add comments for code whose intention might not be obvious or where there are
+complex sections that benefit from a summary. Public APIs of nontrivial logic
+should have its behaviour fully documented. Otherr than this, prefer to avoid
+comments. Absolutely never add comments that just re-state the code in English,
+assume that the reader knows Rust.
+
 ## Key Commands
 
 ### Development

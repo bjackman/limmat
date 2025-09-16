@@ -114,6 +114,7 @@ pub struct Test {
     // do not exist.
     pub depends_on: Vec<TestName>,
     pub error_exit_codes: HashSet<ExitCode>,
+    pub separate_outputs: bool,
 }
 
 impl Test {
@@ -1078,6 +1079,7 @@ pub mod test_utils {
                 depends_on: self.depends_on,
                 config_hash: "fake_config_hash".into(),
                 error_exit_codes: HashSet::new(),
+                separate_outputs: false,
             }
         }
     }

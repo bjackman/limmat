@@ -141,8 +141,13 @@ impl Database {
             }
 
             return Ok(LookupResult::YouRunIt(
-                DatabaseOutput::new(result_dir, test_case.test.config_hash.clone(), flock)
-                    .context("creating database entry")?,
+                DatabaseOutput::new(
+                    result_dir,
+                    test_case.test.config_hash.clone(),
+                    flock,
+                    test_case.test.separate_outputs,
+                )
+                .context("creating database entry")?,
             ));
         }
         bail!("too much database contention, something fishy going on")
@@ -199,6 +204,9 @@ pub struct DatabaseOutput {
     status_written: bool,
     config_hash: ConfigHash,
     json_flock: ExclusiveFlock,
+    separate_outputs: bool,
+    // For merged output mode, we need to share the same file between stdout and stderr
+    shared_output_file: Option<File>,
 }
 
 impl DatabaseOutput {
@@ -206,6 +214,7 @@ impl DatabaseOutput {
         base_dir: PathBuf, // Must exist.
         config_hash: ConfigHash,
         json_flock: ExclusiveFlock,
+        separate_outputs: bool,
     ) -> anyhow::Result<Self> {
         debug!("Creating database entry at {base_dir:?}");
         let artifacts_dir = base_dir.join("artifacts").to_owned();
@@ -222,6 +231,8 @@ impl DatabaseOutput {
             status_written: false,
             config_hash,
             json_flock,
+            separate_outputs,
+            shared_output_file: None,
         })
     }
 
@@ -233,6 +244,7 @@ impl DatabaseOutput {
         base_dir: PathBuf,
         stdout: Stdio,
         stderr: Stdio,
+        separate_outputs: bool,
     ) -> anyhow::Result<Self> {
         let artifacts_dir = base_dir.join("artifacts").to_owned();
         create_dir(&artifacts_dir).context("creating artifacts dir")?;
@@ -256,6 +268,8 @@ impl DatabaseOutput {
             json_flock: ExclusiveFlock::new(json_file)
                 .await
                 .context("locking ephemeral JSON result")?,
+            separate_outputs,
+            shared_output_file: None,
         })
     }
 
@@ -269,13 +283,32 @@ impl DatabaseOutput {
         File::create(&path).with_context(|| format!("creating {}", path.display()))
     }
 
+    fn output_file(&mut self) -> anyhow::Result<File> {
+        let path = self.base_dir.join("output.txt");
+        File::create(&path).with_context(|| format!("creating {}", path.display()))
+    }
+
     pub fn stdout(&mut self) -> Result<Stdio> {
         assert!(!self.stdout_opened);
         self.stdout_opened = true;
         if let Some(stdout) = self.provided_stdout.take() {
             return Ok(stdout);
         }
-        Ok(self.stdout_file()?.into())
+
+        if self.separate_outputs {
+            Ok(self.stdout_file()?.into())
+        } else {
+            // Merged output mode - create shared file if not already created
+            if self.shared_output_file.is_none() {
+                self.shared_output_file = Some(self.output_file()?);
+            }
+            Ok(self
+                .shared_output_file
+                .as_ref()
+                .unwrap()
+                .try_clone()?
+                .into())
+        }
     }
 
     pub fn stderr(&mut self) -> Result<Stdio> {
@@ -284,7 +317,21 @@ impl DatabaseOutput {
         if let Some(stderr) = self.provided_stderr.take() {
             return Ok(stderr);
         }
-        Ok(self.stderr_file()?.into())
+
+        if self.separate_outputs {
+            Ok(self.stderr_file()?.into())
+        } else {
+            // Merged output mode - create shared file if not already created
+            if self.shared_output_file.is_none() {
+                self.shared_output_file = Some(self.output_file()?);
+            }
+            Ok(self
+                .shared_output_file
+                .as_ref()
+                .unwrap()
+                .try_clone()?
+                .into())
+        }
     }
 
     // Set the result and return the created entry. Unfortunately because flock

@@ -145,6 +145,11 @@
             "$ref": "#/definitions/Resource"
           }
         },
+        "separate_outputs": {
+          "description": "When false (default), stdout and stderr are merged into output.txt. When true, they are kept separate as stdout.txt and stderr.txt.",
+          "default": false,
+          "type": "boolean"
+        },
         "shutdown_grace_period_s": {
           "description": "When a job is no longer needed it's SIGTERMed. If it doesn't respond (by dying) after this duration it will then be SIGKILLed. This also affects the overall shutdown of limmat so do not set this to longer than you are willing to wait when you terminate this program.",
           "default": 60,

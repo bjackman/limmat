@@ -104,10 +104,18 @@ pub struct Test {
     /// use this to report environmental failures such as dependencies missing
     /// fom the host system. 0 is not allowed.
     error_exit_codes: Vec<ExitCode>,
+    #[serde(default = "default_separate_outputs")]
+    /// When false (default), stdout and stderr are merged into output.txt.
+    /// When true, they are kept separate as stdout.txt and stderr.txt.
+    separate_outputs: bool,
 }
 
 fn default_requires_worktree() -> bool {
     true
+}
+
+fn default_separate_outputs() -> bool {
+    false
 }
 
 // This implementation is only valid for Tests among those registered for a single Manager.
@@ -178,6 +186,7 @@ impl Test {
             config_hash,
             depends_on: self.depends_on.iter().map(TestName::new).collect(),
             error_exit_codes,
+            separate_outputs: self.separate_outputs,
         })
     }
 }

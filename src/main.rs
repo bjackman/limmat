@@ -569,7 +569,13 @@ async fn test(
         "Test artifacts will be stored under {}",
         output_dir.display()
     );
-    let output = DatabaseOutput::ephemeral(output_dir, Stdio::inherit(), Stdio::inherit()).await?;
+    let output = DatabaseOutput::ephemeral(
+        output_dir,
+        Stdio::inherit(),
+        Stdio::inherit(),
+        test.separate_outputs,
+    )
+    .await?;
     let db_entry = job
         .run_with(env.repo.path(), &resources, output, dep_db_entries)
         .await?;

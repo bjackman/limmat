@@ -422,9 +422,14 @@ impl OutputBuffer {
             _ => Span::new(status.to_string()),
         }
         .with_url(format!(
-            "{}/{}/stdout.txt",
+            "{}/{}/{}",
             result_url_base,
-            Database::result_relpath(test_case).to_string_lossy()
+            Database::result_relpath(test_case).to_string_lossy(),
+            if test_case.test.separate_outputs {
+                "stdout.txt"
+            } else {
+                "output.txt"
+            }
         ));
         vec![
             Span::new(test_case.test.name.to_string()).with_class(Class::TestName),

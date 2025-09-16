@@ -632,6 +632,7 @@ async fn should_find_output(want_stdout: &str, want_stderr: &str) {
             echo bungle bingle >&2
             touch $LIMMAT_ARTIFACTS/my_artifact
             """
+            separate_outputs = true
 
             shutdown_grace_period_s = 1
         "##,
@@ -849,6 +850,7 @@ static DEP_CONFIG: &str = r##"
     name = "main"
     depends_on = ["dep", "dep2"]
     command = "cat $LIMMAT_ARTIFACTS_dep/ozy $LIMMAT_ARTIFACTS_dep2/trunkless"
+    separate_outputs = true
 "##;
 
 #[googletest::test]

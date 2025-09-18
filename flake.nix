@@ -28,13 +28,17 @@
         pkgs = import nixpkgs { inherit system; };
         naersk = pkgs.callPackage inputs.naersk { };
       in
-      {
+      rec {
         formatter = pkgs.nixfmt-tree;
         packages = rec {
           limmat = naersk.buildPackage {
             src = ./.;
           };
           default = limmat;
+        };
+        devShells.default = pkgs.mkShell {
+          inputsFrom = [ packages.limmat] ;
+          packages = [ pkgs.clippy ];
         };
       }
     );

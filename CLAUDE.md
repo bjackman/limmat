@@ -18,6 +18,8 @@ assume that the reader knows Rust.
 
 ## Key Commands
 
+Run everything via `nix develop`, e.g. `nix develop -c cargo build`.
+
 ### Development
 - `cargo build` - Build the project
 - `cargo check` - Quick compile check without code generation
@@ -31,12 +33,6 @@ assume that the reader knows Rust.
 ### Testing Single Features
 - `cargo test <test_name>` - Run specific test by name
 - `cargo test --test integration_test` - Run integration tests
-
-### Development Tools
-- `bacon` - Continuous compilation and testing (uses `bacon.toml` config)
-- `bacon check` - Continuous checking
-- `bacon test` - Continuous testing  
-- `bacon clippy-all` - Continuous linting on all targets
 
 ### Running Limmat
 - `cargo run -- --help` - Show help

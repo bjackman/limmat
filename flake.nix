@@ -29,6 +29,7 @@
         naersk = pkgs.callPackage inputs.naersk { };
       in
       {
+        formatter = pkgs.nixfmt-tree;
         packages = rec {
           limmat = naersk.buildPackage {
             src = ./.;

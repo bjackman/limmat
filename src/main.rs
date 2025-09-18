@@ -4,7 +4,7 @@ use config::{Config, ParsedConfig};
 use dag::{Dag, GraphNode as _};
 use database::{Database, DatabaseEntry, DatabaseOutput, LookupResult};
 use flexi_logger::{detailed_format, Cleanup, Criterion, FileSpec, Logger, Naming};
-use futures::future::join_all;
+use futures::future::{join_all, try_join_all};
 use futures::StreamExt;
 use git::{Commit, PersistentWorktree, TempWorktree};
 use http::Ui;
@@ -440,36 +440,33 @@ async fn ensure_tests_run(
     //    validation
     // 2. We could build the subset graph in place, i.e. totally skip making a
     //    new graph and instead just logicall remove the nodes we don't need.
-    let jobs = Dag::new(
-        // TODO: Would be nice to have an _into thing so we can avoid this clone.
-        tests.map(|t| TestCase::new(rev.clone(), t.clone())),
-    )
-    .context("setting up dependency test graph")?
-    .bottom_up()
-    .try_fold(
-        HashMap::new(),
-        |mut jobs, test_case| -> anyhow::Result<HashMap<TestCaseId, TestJob>> {
-            let wait_for = test_case
-                .child_ids() // This gives the TestCaseIds of dependency jobs.
-                .iter()
-                .map(|tc_id| {
-                    let dep_job = &jobs[tc_id.borrow()];
-                    (dep_job.test_name().clone(), dep_job.subscribe_completion())
-                })
-                .collect();
-            let job = TestJobBuilder::new(
-                cancellation_token.clone(),
-                // TODO: it would be nice if we had an into_ variant of
-                // the bottom_up so we didn't need this clone.
-                test_case.clone(),
-                job_env.clone(),
-                wait_for,
-            )
-            .build();
-            jobs.insert(test_case.id().borrow().to_owned(), job);
-            Ok(jobs)
-        },
-    )?;
+    let test_cases = try_join_all(tests.map(|t| TestCase::new(rev.clone(), t.clone(), &*env.repo))).await?;
+    let jobs = Dag::new(test_cases)
+        .context("setting up dependency test graph")?
+        .bottom_up()
+            .try_fold(
+                HashMap::new(),
+                |mut jobs, test_case: &TestCase| -> anyhow::Result<HashMap<TestCaseId, TestJob>> {
+                    let wait_for = test_case
+                        .child_ids() // This gives the TestCaseIds of dependency jobs.
+                        .iter()
+                        .map(|tc_id| {                        let dep_job = &jobs[tc_id.borrow()];
+                        (dep_job.test_name().clone(), dep_job.subscribe_completion())
+                    })
+                    .collect();
+                let job = TestJobBuilder::new(
+                    cancellation_token.clone(),
+                    // TODO: it would be nice if we had an into_ variant of
+                    // the bottom_up so we didn't need this clone.
+                    test_case.clone(),
+                    job_env.clone(),
+                    wait_for,
+                )
+                .build();
+                jobs.insert(test_case.id().borrow().to_owned(), job);
+                Ok(jobs)
+            },
+        )?;
 
     // Kick off creation of the worktrees that the dep jobs will run in.
     // This is horribly copy-pasted from watch. I dunno, I can't figure out how
@@ -552,7 +549,7 @@ async fn test(
     }
 
     let test = env.config.tests.node(&test_name).unwrap();
-    let test_case = TestCase::new(head.clone(), test.clone());
+    let test_case = TestCase::new(head.clone(), test.clone(), &*env.repo).await?;
     let mut needs_resources = test_case.test.needs_resources.clone();
     let job = TestJobBuilder::new(
         cancellation_token.clone(),
@@ -615,9 +612,10 @@ async fn lookup(
         .tests
         .node(&test_name)
         .ok_or(anyhow!("no such test {:?}", test_name.to_string()))?;
+    let test_case = TestCase::new(rev.clone(), test.clone(), &*env.repo).await?;
     match env
         .database
-        .lookup(&TestCase::new(rev.clone(), test.clone()))
+        .lookup(&test_case)
         .await
         .context("database lookup")?
     {

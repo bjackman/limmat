@@ -26,8 +26,13 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-use crate::process::OutputExt;
-use crate::process::{CommandExt, SyncCommandExt as _};
+use sha3::{Digest, Sha3_256};
+
+use crate::{
+    process::OutputExt,
+    process::{CommandExt, SyncCommandExt as _},
+    util::DigestHasher,
+};
 
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
 pub struct Hash(String);
@@ -424,10 +429,16 @@ pub trait Worktree: Debug + Sync {
         Ok(try_stream! {
             let git_common_dir = &self.git_common_dir().await.context("getting git common dir")?;
             let git_dir = &self.git_dir().await.context("getting git common dir")?;
-            debug!("watching {git_dir:?} and {git_common_dir:?}");
+            let notes_dir = git_dir.join("refs/notes");
+            debug!("watching {git_dir:?}, {git_common_dir:?} and {notes_dir:?}");
             watcher
                 .watch(git_dir, RecursiveMode::Recursive)
                 .context("setting up watcher")?;
+            if notes_dir.exists() {
+                watcher
+                    .watch(&notes_dir, RecursiveMode::Recursive)
+                    .context("setting up watcher")?;
+            }
             if git_dir != git_common_dir {
                 watcher
                     .watch(git_common_dir, RecursiveMode::Recursive)
@@ -490,6 +501,47 @@ pub trait Worktree: Debug + Sync {
             hash: CommitHash::new(parts[0]),
             tree: TreeHash::new(parts[1]),
         }))
+    }
+
+    async fn get_notes_hash(&self, commit_hash: &CommitHash) -> anyhow::Result<Option<Hash>> {
+        let output = self
+            .git(["for-each-ref", "refs/notes/"])
+            .await
+            .execute()
+            .await
+            .context("'git for-each-ref' failed")?;
+        let out_str: &str =
+            str::from_utf8(&output.stdout).context("non utf-8 for-each-ref output")?;
+        let refs: Vec<&str> = out_str.lines().map(|line| line.split_whitespace().nth(2).unwrap()).collect();
+
+        let mut note_hashes = Vec::new();
+        for ref_name in refs {
+            let mut cmd = self.git(["notes", "--ref", ref_name, "list"]).await;
+            let cmd = cmd.arg(commit_hash);
+            let output = cmd.output().await.context("failed to run 'git notes list'")?;
+            if output.status.success() {
+                let out_str = String::from_utf8(output.stdout).context("reading git notes list output")?;
+                if !out_str.is_empty() {
+                    note_hashes.push(out_str.split_whitespace().next().unwrap().to_string());
+                }
+            }
+        }
+
+        if note_hashes.is_empty() {
+            return Ok(None);
+        }
+
+        note_hashes.sort();
+
+        let mut hasher = DigestHasher {
+            digest: Sha3_256::new(),
+        };
+        for note_hash in note_hashes {
+            hasher.digest.update(note_hash.as_bytes());
+            hasher.digest.update(b"\n");
+        }
+        let final_hash = hex::encode(hasher.digest.finalize());
+        Ok(Some(Hash::new(final_hash)))
     }
 }
 
@@ -587,7 +639,7 @@ impl TempWorktree {
                     // object before being certain the worktree was even created.
                     debug!("Couldn't clean up worktree {:?}: {:?}", &self.temp_dir, e);
                 }
-                Ok(_) => debug!("Delorted worktree at {:?}", self.temp_dir.path()),
+                Ok(_) => debug!("Deleted worktree at {:?}", self.temp_dir.path()),
             }
         }
 
@@ -621,7 +673,7 @@ impl Drop for TempWorktree {
                     // object before being certain the worktree was even created.
                     debug!("Couldn't clean up worktree {:?}: {:?}", &self.temp_dir, e);
                 }
-                Ok(_) => debug!("Delorted worktree at {:?}", self.temp_dir.path()),
+                Ok(_) => debug!("Deleted worktree at {:?}", self.temp_dir.path()),
             }
         }
     }

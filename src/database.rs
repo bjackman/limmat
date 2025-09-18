@@ -333,7 +333,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::{git::Commit, test::test_utils::TestBuilder};
+    use crate::{git::{Commit, test_utils::TempRepo}, test::test_utils::TestBuilder};
 
     use super::*;
 
@@ -341,6 +341,7 @@ mod tests {
     async fn test_corrupted_result() {
         let db_dir = TempDir::new().unwrap();
         let db = Database::create_or_open(db_dir.path()).unwrap();
+        let repo = TempRepo::new().await.unwrap();
 
         // Setup: Create a corrupted database entry. This simulates Limmat
         // getting killed in the middle of writing.
@@ -349,7 +350,10 @@ mod tests {
         let test_case = TestCase::new(
             Commit::arbitrary(),
             Arc::new(TestBuilder::new("my_test", "", [""]).build()),
-        );
+            &repo,
+        )
+        .await
+        .unwrap();
         let json_path = {
             let mut output = match db.lookup(&test_case).await.unwrap() {
                 LookupResult::FoundResult(_) => panic!("Found result in empty database"),

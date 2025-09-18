@@ -375,13 +375,12 @@ async fn test_worktree_teardown(test_command: &str) {
     .unwrap();
     let mut limmat = builder.start(["watch", "HEAD^"]).await.unwrap();
 
-    timeout(
+    let result = timeout(
         Duration::from_secs(5),
         limmat.result_exists("my_test", "HEAD"),
     )
-    .await
-    .expect("result not found after 5s")
-    .expect("failed to check for test result");
+    .await;
+    assert!(result.is_ok());
 
     limmat.terminate().await.expect("couldn't shut down child");
 
@@ -416,9 +415,10 @@ async fn shouldnt_leak_jobs() {
 
     // Wait for test to start up
     let test_pid_path = temp_dir.path().join("test_pid");
-    wait_for(|| Ok(test_pid_path.exists()), Duration::from_secs(5))
-        .await
-        .expect("test not started after 5s");
+    let result = timeout(Duration::from_secs(5), async {
+        wait_for(|| Ok(test_pid_path.exists()), Duration::from_secs(5)).await
+    }).await;
+    assert!(result.is_ok());
     let pid: pid_t = pid_t::from_str(fs::read_to_string(test_pid_path).unwrap().trim()).unwrap();
 
     limmat.terminate().await.unwrap();
@@ -450,9 +450,10 @@ async fn should_invalidate_cache_when_dep_changes() {
         .unwrap()
         .db_dir(db_dir.clone());
         let _limmat = builder.start(["watch", "HEAD^"]).await.unwrap();
-        wait_for(|| Ok(test_ran_path.exists()), Duration::from_secs(5))
-            .await
-            .expect("test not ran");
+    let result = timeout(Duration::from_secs(5), async {
+        wait_for(|| Ok(test_ran_path.exists()), Duration::from_secs(5)).await
+    }).await;
+    assert!(result.is_ok());
 
         // Shut down child by dropping it. This is racy, it's possible we
         // haven't finished writing the test DB yet. In that case this test
@@ -952,13 +953,12 @@ async fn skip_test() {
 
     // To try and detect if it's running something it shouldn't we'll just wait until it ran
     // something it should... then a bit longer.
-    timeout(
+    let result = timeout(
         Duration::from_secs(5),
         child.result_exists("test-b", "HEAD"),
     )
-    .await
-    .expect("result not found after 5s")
-    .expect("failed to check for test result");
+    .await;
+    assert!(result.is_ok());
 
     let result = timeout(
         Duration::from_secs(1),
@@ -968,4 +968,85 @@ async fn skip_test() {
     // The only error type that timeout can return is the timeout itself. (A failure of the future
     // will return an inner error).
     assert_that!(result, err(anything()));
+}
+
+#[googletest::test]
+#[tokio::test]
+async fn by_commit_with_notes_caching() {
+    let temp_dir = TempDir::new().unwrap();
+    let builder = LimmatChildBuilder::new(format!(
+        r##"
+            num_worktrees = 1
+            [[tests]]
+            name = "my_test"
+            cache = "by_commit_with_notes"
+            command = "echo hello >> {}/output.txt"
+        "##,
+        temp_dir.path().display()
+    ))
+    .await
+    .unwrap();
+
+    // Start with a note
+    Command::new("git")
+        .current_dir(&builder.repo_dir)
+        .args(["notes", "--ref=my-notes", "add", "-m", "a note", "HEAD"])
+        .status()
+        .await
+        .unwrap();
+
+    let mut child = builder.start(["watch", "HEAD^"]).await.unwrap();
+    let result = timeout(
+        Duration::from_secs(5),
+        child.result_exists("my_test", "HEAD"),
+    )
+    .await;
+    assert!(result.is_ok());
+    assert_that!(
+        fs::read_to_string(temp_dir.path().join("output.txt")).unwrap(),
+        eq("hello\n")
+    );
+    child.terminate().await.unwrap();
+
+    // Change the note, should re-run
+    Command::new("git")
+        .current_dir(&builder.repo_dir)
+        .args(["notes", "--ref=my-notes", "add", "-f", "-m", "another note", "HEAD"])
+        .status()
+        .await
+        .unwrap();
+
+    let mut child = builder.start(["watch", "HEAD^"]).await.unwrap();
+    timeout(
+        Duration::from_secs(5),
+        child.result_exists("my_test", "HEAD"),
+    )
+    .await
+    .unwrap();
+    assert_that!(
+        fs::read_to_string(temp_dir.path().join("output.txt")).unwrap(),
+        eq("hello\nhello\n")
+    );
+    child.terminate().await.unwrap();
+
+    // Remove the note, should re-run again
+    Command::new("git")
+        .current_dir(&builder.repo_dir)
+        .args(["notes", "--ref=my-notes", "remove", "HEAD"])
+        .status()
+        .await
+        .unwrap();
+
+    let mut child = builder.start(["watch", "HEAD^"]).await.unwrap();
+    timeout(
+        Duration::from_secs(5),
+        child.result_exists("my_test", "HEAD"),
+    )
+    .await
+    .unwrap();
+    assert_that!(
+        fs::read_to_string(temp_dir.path().join("output.txt")).unwrap(),
+        eq("hello\nhello\nhello\n")
+    );
+    child.terminate().await.unwrap();
 }

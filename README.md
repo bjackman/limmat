@@ -151,6 +151,10 @@ That means Limmat won't re-run tests unless the actual repository contents
 change - for example changes to the commit message won't invalidate cache
 results.
 
+You can also set `cache = "by_commit_with_notes"` to invalidate the cache if the
+commit's notes change. This is useful if you have tests that depend on metadata
+stored in notes.
+
 If the test is terminated by a signal, it isn't considered to have produced a
 result: instead of "success" or "failure" it's an "error". Errors aren't cached.
 

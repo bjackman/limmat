@@ -32,11 +32,13 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     dag::{Dag, GraphNode},
     database::{Database, DatabaseEntry, DatabaseOutput, LookupResult},
-    git::{Commit, CommitHash, Hash, Worktree},
+    git::{Commit, CommitHash, Worktree},
     process::ExitStatusExt as _,
     resource::{Pools, ResourceKey, Resources},
     util::ResultExt,
 };
+use crate::git::Hash;
+use sha3::Digest;
 
 #[derive(Deserialize, JsonSchema, Serialize, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -44,16 +46,27 @@ pub enum CachePolicy {
     NoCaching,
     ByCommit,
     ByTree,
+    ByCommitWithNotes,
 }
 
 impl CachePolicy {
     // Figure out the hash that should be used to store a result in the
     // database, if it should be stored at all
-    pub fn cache_hash(&self, commit: &Commit) -> Option<Hash> {
+    pub async fn cache_hash<W: Worktree + ?Sized>(&self, commit: &Commit, worktree: &W) -> anyhow::Result<Option<Hash>> {
         match self {
-            CachePolicy::NoCaching => None::<Hash>,
-            CachePolicy::ByCommit => Some(commit.hash.clone().into()),
-            CachePolicy::ByTree => Some(commit.tree.clone().into()),
+            CachePolicy::NoCaching => Ok(None),
+            CachePolicy::ByCommit => Ok(Some(commit.hash.clone().into())),
+            CachePolicy::ByTree => Ok(Some(commit.tree.clone().into())),
+            CachePolicy::ByCommitWithNotes => {
+                let notes_hash = worktree.get_notes_hash(&commit.hash).await?;
+                let mut hasher = crate::util::DigestHasher {
+                    digest: sha3::Sha3_256::new(),
+                };
+                use std::hash::Hash;
+                commit.hash.hash(&mut hasher);
+                notes_hash.hash(&mut hasher);
+                Ok(Some(crate::git::Hash::new(hex::encode(hasher.digest.finalize()))))
+            }
         }
     }
 }
@@ -281,21 +294,23 @@ impl<W: Worktree + Sync + Send + 'static> Manager<W> {
         }))
         .await?;
 
-        self.set_commits(commits)
+        self.set_commits(commits).await
     }
 
     // Inner non-async helper for set_revisions.
-    pub fn set_commits(&self, commits: impl IntoIterator<Item = Commit>) -> anyhow::Result<()> {
-        let mut job_cts = self.job_cts.lock();
+    pub async fn set_commits(&self, commits: impl IntoIterator<Item = Commit>) -> anyhow::Result<()> {
+        let mut test_cases_to_build = Vec::new();
+        for (commit, test) in commits.into_iter().cartesian_product(self.tests.nodes()) {
+            test_cases_to_build.push((commit, test.clone()));
+        }
 
-        let test_cases: HashMap<TestCaseId, TestCase> = commits
-            .into_iter()
-            .cartesian_product(self.tests.nodes())
-            .map(|(commit, test)| {
-                let tc = TestCase::new(commit, test.clone());
-                (tc.id(), tc)
-            })
-            .collect();
+        let mut test_cases = HashMap::new();
+        for (commit, test) in test_cases_to_build {
+            let tc = TestCase::new(commit, test, &*self.repo).await?;
+            test_cases.insert(tc.id(), tc);
+        }
+
+        let mut job_cts = self.job_cts.lock();
 
         // Cancel jobs for test cases that we don't care about any more.
         // https://github.com/rust-lang/rust/issues/59618 would make this more convenient.
@@ -892,12 +907,12 @@ impl Debug for TestCase {
 }
 
 impl TestCase {
-    pub fn new(commit: Commit, test: Arc<Test>) -> Self {
-        Self {
-            cache_hash: test.cache_policy.cache_hash(&commit),
+    pub async fn new<W: Worktree + ?Sized>(commit: Commit, test: Arc<Test>, worktree: &W) -> anyhow::Result<Self> {
+        Ok(Self {
+            cache_hash: test.cache_policy.cache_hash(&commit, worktree).await?,
             test,
             commit_hash: commit.hash,
-        }
+        })
     }
 
     // Returns the hash that should be used to store the result in the result
@@ -1610,7 +1625,7 @@ mod tests {
 
         // Convenience helper to construct a TestCase referring to this fixture's configuration.
         // yes this function is O(test_idx). you got a porblem with that?? is that a porblem?
-        fn test_case(&self, commit: impl Borrow<Commit>, test_idx: usize) -> TestCase {
+        async fn test_case(&self, commit: impl Borrow<Commit>, test_idx: usize) -> TestCase {
             TestCase::new(
                 commit.borrow().to_owned(),
                 self.manager
@@ -1619,7 +1634,10 @@ mod tests {
                     .nth(test_idx)
                     .expect("bad test idx")
                     .clone(),
+                &*self.repo,
             )
+            .await
+            .unwrap()
         }
     }
 
@@ -1645,10 +1663,11 @@ mod tests {
             .expect("couldn't create test commit");
         f.manager.set_revisions(vec![commit.clone()]).await.unwrap();
         // We should get a singular result because we only fed in one revision.
+        let test_case = f.test_case(&commit, 0).await;
         expect_notifs_20s(
             &mut results,
             [(
-                f.test_case(&commit, 0),
+                test_case,
                 vec![
                     TestStatusMatcher::Enqueued,
                     TestStatusMatcher::Started,
@@ -1702,49 +1721,49 @@ mod tests {
         ))
         .await
         .expect("hash1 tests did not all get siginted");
+        let test_cases = [
+        (
+            f.test_case(&commit1, 0).await,
+            vec![
+                TestStatusMatcher::Enqueued,
+                TestStatusMatcher::Started,
+                TestStatusMatcher::Inconclusive(TestInconclusive::Canceled),
+            ]
+            .into(),
+        ),
+        (
+            f.test_case(&commit1, 1).await,
+            vec![
+                TestStatusMatcher::Enqueued,
+                TestStatusMatcher::Started,
+                TestStatusMatcher::Inconclusive(TestInconclusive::Canceled),
+            ]
+            .into(),
+        ),
+        // This isn't what we're testing here but we need to assert that it comes in so we can
+        // check below that nothing else comes in.
+        (
+            f.test_case(&commit2, 0).await,
+            vec![
+                TestStatusMatcher::Enqueued,
+                TestStatusMatcher::Started,
+                TestStatusMatcher::Completed(0),
+            ]
+            .into(),
+        ),
+        (
+            f.test_case(&commit2, 1).await,
+            vec![
+                TestStatusMatcher::Enqueued,
+                TestStatusMatcher::Started,
+                TestStatusMatcher::Completed(0),
+            ]
+            .into(),
+        )];
         expect_notifs_20s(
             &mut results,
             // awu weh, weh mah
-            [
-                (
-                    f.test_case(&commit1, 0),
-                    vec![
-                        TestStatusMatcher::Enqueued,
-                        TestStatusMatcher::Started,
-                        TestStatusMatcher::Inconclusive(TestInconclusive::Canceled),
-                    ]
-                    .into(),
-                ),
-                (
-                    f.test_case(&commit1, 1),
-                    vec![
-                        TestStatusMatcher::Enqueued,
-                        TestStatusMatcher::Started,
-                        TestStatusMatcher::Inconclusive(TestInconclusive::Canceled),
-                    ]
-                    .into(),
-                ),
-                // This isn't what we're testing here but we need to assert that it comes in so we can
-                // check below that nothing else comes in.
-                (
-                    f.test_case(&commit2, 0),
-                    vec![
-                        TestStatusMatcher::Enqueued,
-                        TestStatusMatcher::Started,
-                        TestStatusMatcher::Completed(0),
-                    ]
-                    .into(),
-                ),
-                (
-                    f.test_case(&commit2, 1),
-                    vec![
-                        TestStatusMatcher::Enqueued,
-                        TestStatusMatcher::Started,
-                        TestStatusMatcher::Completed(0),
-                    ]
-                    .into(),
-                ),
-            ],
+            test_cases,
         )
         .await
         .unwrap();
@@ -1846,13 +1865,13 @@ mod tests {
     #[test_case(4, 4 ; "multiple worktrees, multiple tests")]
     #[tokio::test]
     async fn should_handle_many(num_worktrees: usize, num_tests: usize) {
-        let f = TestScriptFixture::builder()
+        let f = Arc::new(TestScriptFixture::builder()
             .num_tests(num_tests)
             .num_worktrees(num_worktrees)
             .build()
-            .await;
+            .await);
         let mut commits = Vec::new();
-        let mut want_results = Vec::new();
+        let mut want_results_futures = Vec::new();
         for i in 0..50 {
             let commit = f
                 .repo
@@ -1860,18 +1879,23 @@ mod tests {
                 .await
                 .expect("couldn't create test commit");
             for j in 0..num_tests {
-                want_results.push((
-                    f.test_case(&commit, j),
-                    vec![
-                        TestStatusMatcher::Enqueued,
-                        TestStatusMatcher::Started,
-                        TestStatusMatcher::Completed(i),
-                    ]
-                    .into(),
-                ));
+                let commit = commit.clone();
+                let f = f.clone();
+                want_results_futures.push(async move {
+                    (
+                        f.test_case(&commit, j).await,
+                        vec![
+                            TestStatusMatcher::Enqueued,
+                            TestStatusMatcher::Started,
+                            TestStatusMatcher::Completed(i),
+                        ]
+                        .into(),
+                    )
+                });
             }
             commits.push(commit);
         }
+        let want_results = join_all(want_results_futures).await;
         let mut results = f.manager.results();
         f.manager.set_revisions(commits.clone()).await.unwrap();
         expect_notifs_20s(&mut results, want_results)
@@ -2123,51 +2147,46 @@ mod tests {
             .await
             .unwrap();
         // wait for first test to get started.
+        let test_case = f.test_case(&commits[0], 0).await;
         expect_notifs_20s(
             &mut results,
             [(
-                f.test_case(&commits[0], 0),
+                test_case,
                 vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
             )],
         )
         .await
-        .expect("bad test result");
+        .unwrap();
 
         // Now we enqueue the test that should block.
         f.manager
             .set_revisions(vec![commits[0].clone(), commits[1].clone()])
             .await
             .unwrap();
+        let test_case = f.test_case(&commits[1], 0).await;
         expect_notifs_20s(
             &mut results,
-            [(
-                f.test_case(&commits[1], 0),
-                vec![TestStatusMatcher::Enqueued].into(),
-            )],
+            [(test_case, vec![TestStatusMatcher::Enqueued].into())],
         )
         .await
-        .expect("bad test result");
+        .unwrap();
 
         // Now we cancel both of those tests.
         f.manager
             .set_revisions::<_, CommitHash>(Vec::new())
             .await
             .unwrap();
-        expect_notifs_20s(
-            &mut results,
-            [
-                (
-                    f.test_case(&commits[0], 0),
-                    vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
-                ),
-                (
-                    f.test_case(&commits[1], 0),
-                    vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
-                ),
-            ],
-        )
-        .await
-        .expect("bad test result");
+        let test_cases = [
+            (
+                f.test_case(&commits[0], 0).await,
+                vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
+            ),
+            (
+                f.test_case(&commits[1], 0).await,
+                vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
+            ),
+        ];
+        expect_notifs_20s(&mut results, test_cases).await.unwrap();
 
         expect_no_more_results(&mut results, &f.manager)
             .await
@@ -2208,39 +2227,36 @@ mod tests {
             .set_revisions(vec![with_error.clone(), with_fail.clone()].clone())
             .await
             .unwrap();
-        expect_notifs_20s(
-            &mut results,
-            [
-                (
-                    f.test_case(&with_error, 0),
-                    vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
-                ),
-                (
-                    f.test_case(&with_error, 1),
-                    vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
-                ),
-                (
-                    f.test_case(&with_fail, 0),
-                    vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
-                ),
-                (
-                    f.test_case(&with_fail, 1),
-                    vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
-                ),
-            ],
-        )
-        .await
-        .expect("bad test result");
+        let test_cases = [
+            (
+                f.test_case(&with_error, 0).await,
+                vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
+            ),
+            (
+                f.test_case(&with_fail, 0).await,
+                vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
+            ),
+            (
+                f.test_case(&with_error, 1).await,
+                vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
+            ),
+            (
+                f.test_case(&with_fail, 1).await,
+                vec![TestStatusMatcher::Enqueued, TestStatusMatcher::Started].into(),
+            ),
+        ];
+        expect_notifs_20s(&mut results, test_cases).await.unwrap();
 
         // Cause one to fail with an error. We take advantage of the fact that
         // this whole tool considers it an "error" when a test exits with a
         // signal instead of exiting with a nonzero code.
         let started_script = f.scripts[0].started(&with_error.hash).await;
         started_script.sigurs1();
+        let test_case = f.test_case(&with_error, 0).await;
         expect_notifs_20s(
             &mut results,
             [(
-                f.test_case(&with_error, 0),
+                test_case,
                 vec![TestStatusMatcher::Inconclusive(TestInconclusive::Error(
                     String::from("terminated by signal 10"),
                 ))]
@@ -2253,25 +2269,21 @@ mod tests {
 
         // ... and the others to be canceled.
         f.manager.cancel_running().await.unwrap();
-        expect_notifs_20s(
-            &mut results,
-            [
-                (
-                    f.test_case(&with_error, 1),
-                    vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
-                ),
-                (
-                    f.test_case(&with_fail, 0),
-                    vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
-                ),
-                (
-                    f.test_case(&with_fail, 1),
-                    vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
-                ),
-            ],
-        )
-        .await
-        .expect("didn't see test cancellation");
+        let test_cases = [
+            (
+                f.test_case(&with_error, 1).await,
+                vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
+            ),
+            (
+                f.test_case(&with_fail, 0).await,
+                vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
+            ),
+            (
+                f.test_case(&with_fail, 1).await,
+                vec![TestStatusMatcher::Inconclusive(TestInconclusive::Canceled)].into(),
+            ),
+        ];
+        expect_notifs_20s(&mut results, test_cases).await.unwrap();
 
         // They should now get run a second time. i.e. none of the results should have got hashed.
         f.manager

@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-25.05";
+    flake-utils.url = "github:numtide/flake-utils";
     naersk = {
       url = "github:nix-community/naersk";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -13,29 +14,27 @@
     inputs@{
       self,
       nixpkgs,
+      flake-utils,
       ...
     }:
-    {
-
-      packages =
-        let
-          # Other systems probably work too, I just don't have them to test. Feel
-          # free to add them if you test them.
-          supportedSystems = [ "x86_64-linux" ];
-          forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
-        in
-        forAllSystems (
-          system:
-          let
-            pkgs = import nixpkgs { inherit system; };
-            naersk = pkgs.callPackage inputs.naersk { };
-          in
-          rec {
-            limmat = naersk.buildPackage {
-              src = ./.;
-            };
-            default = limmat;
-          }
-        );
-    };
+    let
+      # Other systems probably work too, I just don't have them to test. Feel
+      # free to add them if you test them.
+      supportedSystems = [ "x86_64-linux" ];
+    in
+    flake-utils.lib.eachSystem supportedSystems (
+      system:
+      let
+        pkgs = import nixpkgs { inherit system; };
+        naersk = pkgs.callPackage inputs.naersk { };
+      in
+      {
+        packages = rec {
+          limmat = naersk.buildPackage {
+            src = ./.;
+          };
+          default = limmat;
+        };
+      }
+    );
 }

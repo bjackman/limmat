@@ -48,12 +48,12 @@ impl<'a, T: Into<Line<'a>>> From<T> for Text<'a> {
 impl<'a> Text<'a> {
     // Render the text with style applied using ANSI commands. Use Display on the returned value
     // to write it out.
-    pub fn ansi(&self) -> RenderAnsi {
+    pub fn ansi(&self) -> RenderAnsi<'_> {
         RenderAnsi { text: self }
     }
 
     // Render to an HTML <pre> element.
-    pub fn html_pre(&self) -> RenderHtmlPre {
+    pub fn html_pre(&self) -> RenderHtmlPre<'_> {
         RenderHtmlPre { text: self }
     }
 

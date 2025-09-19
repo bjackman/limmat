@@ -156,7 +156,7 @@ impl LimmatChildBuilder {
         Ok(())
     }
 
-    async fn start(&self, args: impl IntoIterator<Item = &str>) -> anyhow::Result<LimmatChild> {
+    async fn start(&self, args: impl IntoIterator<Item = &str>) -> anyhow::Result<LimmatChild<'_>> {
         let worktree_dir = self.temp_dir.path().join("worktrees");
         create_dir_all(&worktree_dir).unwrap();
 

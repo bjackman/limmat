@@ -1271,7 +1271,7 @@ mod tests {
         }
 
         // Blocks until the script is started for the given commit hash.
-        pub async fn started(&self, hash: &CommitHash) -> StartedTestScript {
+        pub async fn started(&self, hash: &CommitHash) -> StartedTestScript<'_> {
             let pid_path = self.signalling_path(Self::PID_FILENAME_PREFIX, hash);
             path_exists(&pid_path).await;
             let content = fs::read_to_string(pid_path).expect("couldn't read PID file");

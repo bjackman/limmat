@@ -78,7 +78,10 @@ impl Pools {
     //
     // https://github.com/rust-lang/rust-clippy/issues/13075
     #[expect(clippy::await_holding_lock)]
-    pub async fn get(&self, wants: impl IntoIterator<Item = (ResourceKey, usize)>) -> Resources {
+    pub async fn get(
+        &self,
+        wants: impl IntoIterator<Item = (ResourceKey, usize)>,
+    ) -> Resources<'_> {
         let wants: Vec<(ResourceKey, usize)> = wants.into_iter().collect();
         let mut guard = self.resources.lock();
         loop {
@@ -214,7 +217,7 @@ mod tests {
     }
 
     #[test_case(
-        vec![("foo".into(), vec![]), ("bar".into(), vec![])], 
+        vec![("foo".into(), vec![]), ("bar".into(), vec![])],
         vec![("foo".into(), 1), ("bar".into(), 0)]; "two empty")]
     // #[test_case(vec![0, 0], 1, vec![1, 1] ; "two empty, want both")]
     // #[test_case(vec![4], 1, vec![6] ; "too many")]

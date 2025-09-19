@@ -13,6 +13,7 @@ jobs:
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'bjackman' }} # Skip in forks
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -32,6 +33,7 @@ jobs:
   release-plz-pr:
     name: Release-plz PR
     runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'bjackman' }} # Skip in forks
     concurrency:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false

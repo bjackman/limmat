@@ -38,7 +38,7 @@
         };
         devShells.default = pkgs.mkShell {
           inputsFrom = [ packages.limmat] ;
-          packages = [ pkgs.clippy ];
+          packages = (with pkgs; [ clippy rustfmt ]);
         };
       }
     );

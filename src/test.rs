@@ -44,6 +44,7 @@ pub enum CachePolicy {
     NoCaching,
     ByCommit,
     ByTree,
+    ByCommitWithNotes,
 }
 
 impl CachePolicy {
@@ -54,6 +55,13 @@ impl CachePolicy {
             CachePolicy::NoCaching => None::<Hash>,
             CachePolicy::ByCommit => Some(commit.hash.clone().into()),
             CachePolicy::ByTree => Some(commit.tree.clone().into()),
+            CachePolicy::ByCommitWithNotes => {
+                let notes_part = commit.limmat_notes_object
+                    .as_ref()
+                    .map(|h| h.as_ref())
+                    .unwrap_or("no-notes");
+                Some(Hash::new(format!("{}:{}", commit.hash, notes_part)))
+            }
         }
     }
 }
@@ -1841,6 +1849,63 @@ mod tests {
         assert_eq!(f.scripts[0].num_runs(&orig_commit.hash), 2);
         assert_eq!(f.scripts[1].num_runs(&orig_commit.hash), 1);
         assert_eq!(f.scripts[2].num_runs(&orig_commit.hash), 1);
+    }
+
+    #[tokio::test]
+    async fn should_cache_by_commit_with_notes() {
+        let f = TestScriptFixture::builder()
+            .cache_policies([CachePolicy::ByCommitWithNotes])
+            .build()
+            .await;
+
+        // Create a commit
+        let commit = f
+            .repo
+            .commit("test commit for notes caching")
+            .await
+            .expect("couldn't create test commit");
+
+        // Run test on the commit - should run the first time
+        f.manager
+            .set_revisions(vec![commit.clone()])
+            .await
+            .unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 1);
+
+        // Run again on same commit - should be cached (no notes = consistent cache key)
+        f.manager
+            .set_revisions(vec![commit.clone()])
+            .await
+            .unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 1); // Still 1, was cached
+
+        // Add a note to the commit using git CLI
+        let notes_content = "test note content";
+        tokio::process::Command::new("git")
+            .current_dir(f.repo.path())
+            .args(["notes", "--ref=limmat", "add", "-m", notes_content])
+            .arg(&commit.hash)
+            .status()
+            .await
+            .expect("Failed to execute git command");
+
+        // Run again - should re-run because notes changed the cache key
+        f.manager
+            .set_revisions(vec![commit.clone()])
+            .await
+            .unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 2); // Should be 2 now
+
+        // Run again with same note - should be cached again
+        f.manager
+            .set_revisions(vec![commit.clone()])
+            .await
+            .unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 2); // Still 2, was cached
     }
 
     #[test_case(1, 1 ; "single worktree, one test")]

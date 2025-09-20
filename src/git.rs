@@ -172,6 +172,7 @@ impl Worktree for PersistentWorktree {
 pub struct Commit {
     pub hash: CommitHash,
     pub tree: TreeHash,
+    pub limmat_notes_object: Option<Hash>,
 }
 
 impl Commit {
@@ -180,6 +181,7 @@ impl Commit {
         Self {
             hash: CommitHash::new("080b8ecbad3e34e55c5a035af80100f73b742a8d"),
             tree: TreeHash::new("6366d790125291272542a6b40f6fd3400e080821"),
+            limmat_notes_object: None,
         }
     }
 }
@@ -489,6 +491,7 @@ pub trait Worktree: Debug + Sync {
         Ok(Some(Commit {
             hash: CommitHash::new(parts[0]),
             tree: TreeHash::new(parts[1]),
+            limmat_notes_object: None, // TODO: Implement notes discovery
         }))
     }
 }

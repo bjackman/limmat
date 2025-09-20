@@ -56,7 +56,8 @@ impl CachePolicy {
             CachePolicy::ByCommit => Some(commit.hash.clone().into()),
             CachePolicy::ByTree => Some(commit.tree.clone().into()),
             CachePolicy::ByCommitWithNotes => {
-                let notes_part = commit.limmat_notes_object
+                let notes_part = commit
+                    .limmat_notes_object
                     .as_ref()
                     .map(|h| h.as_ref())
                     .unwrap_or("no-notes");
@@ -919,8 +920,12 @@ impl TestCase {
     // TODO: this is always getting built on-demand all over the place, it
     // doesn't really need to be.
     fn id(&self) -> TestCaseId {
-        // The hash_cache is redundant information here so we don't need to include it.
-        TestCaseId::new(&self.commit_hash, &self.test.name)
+        // Include cache_hash in the ID so that different cache keys create different test cases
+        if let Some(cache_hash) = &self.cache_hash {
+            TestCaseId(format!("{}:{}", cache_hash, self.test.name))
+        } else {
+            TestCaseId::new(&self.commit_hash, &self.test.name)
+        }
     }
 }
 
@@ -1866,18 +1871,12 @@ mod tests {
             .expect("couldn't create test commit");
 
         // Run test on the commit - should run the first time
-        f.manager
-            .set_revisions(vec![commit.clone()])
-            .await
-            .unwrap();
+        f.manager.set_revisions(vec![commit.clone()]).await.unwrap();
         f.manager.settled().await;
         assert_eq!(f.scripts[0].num_runs(&commit.hash), 1);
 
         // Run again on same commit - should be cached (no notes = consistent cache key)
-        f.manager
-            .set_revisions(vec![commit.clone()])
-            .await
-            .unwrap();
+        f.manager.set_revisions(vec![commit.clone()]).await.unwrap();
         f.manager.settled().await;
         assert_eq!(f.scripts[0].num_runs(&commit.hash), 1); // Still 1, was cached
 
@@ -1891,9 +1890,18 @@ mod tests {
             .await
             .expect("Failed to execute git command");
 
+        // Create a new commit object by re-parsing the same commit hash
+        // This should pick up the newly added notes
+        let commit_with_notes = f
+            .repo
+            .rev_parse(&commit.hash)
+            .await
+            .expect("Failed to re-parse commit")
+            .expect("Commit should exist");
+
         // Run again - should re-run because notes changed the cache key
         f.manager
-            .set_revisions(vec![commit.clone()])
+            .set_revisions(vec![commit_with_notes.clone()])
             .await
             .unwrap();
         f.manager.settled().await;
@@ -1901,7 +1909,7 @@ mod tests {
 
         // Run again with same note - should be cached again
         f.manager
-            .set_revisions(vec![commit.clone()])
+            .set_revisions(vec![commit_with_notes.clone()])
             .await
             .unwrap();
         f.manager.settled().await;

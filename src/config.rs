@@ -94,6 +94,7 @@ pub struct Test {
     /// willing to wait when you terminate this program.
     shutdown_grace_period_s: u64,
     #[serde(default = "default_cache_policy")]
+    /// Controls when test results are cached. "by_commit" (default) caches by commit hash. "by_tree" caches by tree hash (ignores commit message changes). "by_commit_with_notes" caches by commit hash plus git notes under refs/notes/limmat. "no_caching" disables caching.
     cache: CachePolicy,
     #[serde(default)]
     depends_on: Vec<String>,

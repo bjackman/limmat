@@ -971,3 +971,71 @@ async fn skip_test() {
     // will return an inner error).
     assert_that!(result, err(anything()));
 }
+
+#[tokio::test]
+async fn should_provide_notes_object_env_var() {
+    let temp_dir = TempDir::new().unwrap();
+    let notes_output_file = temp_dir.path().join("notes_content.txt");
+
+    let config = format!(
+        r##"
+        num_worktrees = 1
+        [[tests]]
+        name = "notes_test"
+        cache = "by_commit_with_notes"
+        command = ["bash", "-c", "if [[ -n \"$LIMMAT_NOTES_OBJECT\" ]]; then git cat-file -p \"$LIMMAT_NOTES_OBJECT\" > {}; else echo 'NO_NOTES' > {}; fi"]
+        shutdown_grace_period_s = 2
+        "##,
+        notes_output_file.display(),
+        notes_output_file.display(),
+    );
+
+    let builder = LimmatChildBuilder::new(&config).await.unwrap();
+
+    // Create a new commit first
+    let git_status = Command::new("git")
+        .current_dir(&builder.repo_dir)
+        .args(["commit", "--allow-empty", "-m", "test commit for notes"])
+        .status()
+        .await
+        .expect("Failed to create test commit");
+
+    assert!(git_status.success(), "Failed to create test commit");
+
+    // Add a git note to the new HEAD commit
+    let notes_content = "integration test note content";
+    let git_status = Command::new("git")
+        .current_dir(&builder.repo_dir)
+        .args(["notes", "--ref=limmat", "add", "-m", notes_content, "HEAD"])
+        .status()
+        .await
+        .expect("Failed to execute git notes command");
+
+    assert!(git_status.success(), "Failed to add git note");
+
+    let mut limmat = builder.start(["watch", "HEAD^"]).await.unwrap();
+
+    // Wait for the test to complete
+    timeout(
+        Duration::from_secs(10),
+        limmat.result_exists("notes_test", "HEAD"),
+    )
+    .await
+    .expect("Test result not found within timeout")
+    .expect("Failed to check for test result");
+
+    limmat
+        .terminate()
+        .await
+        .expect("Failed to terminate limmat");
+
+    // Verify the notes content was correctly accessed via LIMMAT_NOTES_OBJECT
+    let output_content =
+        fs::read_to_string(&notes_output_file).expect("Failed to read notes output file");
+
+    assert_eq!(
+        output_content.trim(),
+        notes_content,
+        "Expected notes content to be accessible via LIMMAT_NOTES_OBJECT"
+    );
+}

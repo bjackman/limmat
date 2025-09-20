@@ -750,6 +750,9 @@ impl<'a> TestJob {
         dep_db_entries: &DepDatabaseEntries,
     ) {
         cmd.env("LIMMAT_COMMIT", &self.test_case.commit_hash);
+        if let Some(notes_object) = &self.test_case.notes_object_hash {
+            cmd.env("LIMMAT_NOTES_OBJECT", notes_object.as_ref() as &str);
+        }
         cmd.env("LIMMAT_ARTIFACTS", artifacts_dir);
         for (k, v) in self.base_env.iter() {
             cmd.env(k, v);
@@ -887,6 +890,8 @@ pub struct TestCase {
     // Hash that will be used to identify the test result. Might be a tree hash,
     // otherwise it matches the commit hash.
     pub cache_hash: Option<Hash>,
+    // Git object hash of notes content (for LIMMAT_NOTES_OBJECT env var)
+    pub notes_object_hash: Option<Hash>,
     pub test: Arc<Test>,
 }
 
@@ -905,6 +910,7 @@ impl TestCase {
     pub fn new(commit: Commit, test: Arc<Test>) -> Self {
         Self {
             cache_hash: test.cache_policy.cache_hash(&commit),
+            notes_object_hash: commit.limmat_notes_object.clone(),
             test,
             commit_hash: commit.hash,
         }

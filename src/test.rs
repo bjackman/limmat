@@ -2179,6 +2179,185 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_limmat_notes_object_env() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = Arc::new(TempRepo::new().await.unwrap());
+
+        // Create a commit
+        let commit = repo
+            .commit("test commit")
+            .await
+            .expect("couldn't create test commit");
+
+        // Add a git note to the commit
+        let notes_content = "test note for env var";
+        tokio::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["notes", "--ref=limmat", "add", "-m", notes_content])
+            .arg(&commit.hash)
+            .status()
+            .await
+            .expect("Failed to add git note");
+
+        // Get the notes object hash that should be set
+        let notes_output = tokio::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["notes", "--ref=limmat", "list"])
+            .arg(&commit.hash)
+            .output()
+            .await
+            .expect("Failed to get notes list");
+        let expected_notes_object = String::from_utf8_lossy(&notes_output.stdout)
+            .trim()
+            .to_string();
+
+        let db_dir = TempDir::new().expect("couldn't make temp dir for result DB");
+
+        // Set up test that dumps environment
+        let tests = Dag::new([Arc::new(
+            TestBuilder::new(
+                "env_test",
+                "bash",
+                [
+                    "-c".into(),
+                    OsString::from(format!(
+                        "env >> {0:?}/${{LIMMAT_COMMIT}}_env.txt",
+                        temp_dir.path()
+                    )),
+                ],
+            )
+            .cache_policy(CachePolicy::ByCommitWithNotes)
+            .needs_resources([(ResourceKey::Worktree, 1)])
+            .build(),
+        )])
+        .expect("couldn't build test DAG");
+
+        let resource_pools =
+            Pools::new([(ResourceKey::Worktree, worktree_resources(&repo, 1).await)]);
+        let m = Manager::new(
+            repo.clone(),
+            "/fake/config/path",
+            Arc::new(Database::create_or_open(db_dir.path()).expect("couldn't setup result DB")),
+            Arc::new(resource_pools),
+            tests,
+        );
+
+        m.set_revisions([commit.clone()])
+            .await
+            .expect("set_revisions failed");
+        m.settled().await;
+
+        // Read and parse the environment dump
+        let env_path = temp_dir.path().join(format!("{}_env.txt", commit.hash));
+        let env_dump = fs::read_to_string(&env_path).unwrap_or_else(|_| {
+            panic!(
+                "couldn't read env dumped from test script at {}",
+                env_path.display()
+            )
+        });
+        let env: HashMap<&str, &str> = env_dump
+            .trim()
+            .split("\n")
+            .filter_map(|line| {
+                let parts: Vec<_> = line.splitn(2, "=").collect();
+                if parts.len() != 2 {
+                    return None;
+                }
+                Some((parts[0], parts[1]))
+            })
+            .collect();
+
+        // Verify LIMMAT_NOTES_OBJECT is set correctly
+        assert_eq!(
+            env.get("LIMMAT_NOTES_OBJECT"),
+            Some(expected_notes_object.as_str()).as_ref()
+        );
+
+        // Also verify LIMMAT_COMMIT is still set
+        assert_eq!(
+            env.get("LIMMAT_COMMIT").map(|t| CommitHash::new(*t)),
+            Some(&commit.hash).cloned()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_limmat_notes_object_env_no_notes() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = Arc::new(TempRepo::new().await.unwrap());
+
+        // Create a commit WITHOUT notes
+        let commit = repo
+            .commit("test commit without notes")
+            .await
+            .expect("couldn't create test commit");
+
+        let db_dir = TempDir::new().expect("couldn't make temp dir for result DB");
+
+        // Set up test that dumps environment
+        let tests = Dag::new([Arc::new(
+            TestBuilder::new(
+                "env_test",
+                "bash",
+                [
+                    "-c".into(),
+                    OsString::from(format!(
+                        "env >> {0:?}/${{LIMMAT_COMMIT}}_env.txt",
+                        temp_dir.path()
+                    )),
+                ],
+            )
+            .cache_policy(CachePolicy::ByCommitWithNotes)
+            .needs_resources([(ResourceKey::Worktree, 1)])
+            .build(),
+        )])
+        .expect("couldn't build test DAG");
+
+        let resource_pools =
+            Pools::new([(ResourceKey::Worktree, worktree_resources(&repo, 1).await)]);
+        let m = Manager::new(
+            repo.clone(),
+            "/fake/config/path",
+            Arc::new(Database::create_or_open(db_dir.path()).expect("couldn't setup result DB")),
+            Arc::new(resource_pools),
+            tests,
+        );
+
+        m.set_revisions([commit.clone()])
+            .await
+            .expect("set_revisions failed");
+        m.settled().await;
+
+        // Read and parse the environment dump
+        let env_path = temp_dir.path().join(format!("{}_env.txt", commit.hash));
+        let env_dump = fs::read_to_string(&env_path).unwrap_or_else(|_| {
+            panic!(
+                "couldn't read env dumped from test script at {}",
+                env_path.display()
+            )
+        });
+        let env: HashMap<&str, &str> = env_dump
+            .trim()
+            .split("\n")
+            .filter_map(|line| {
+                let parts: Vec<_> = line.splitn(2, "=").collect();
+                if parts.len() != 2 {
+                    return None;
+                }
+                Some((parts[0], parts[1]))
+            })
+            .collect();
+
+        // Verify LIMMAT_NOTES_OBJECT is NOT set when there are no notes
+        assert_eq!(env.get("LIMMAT_NOTES_OBJECT"), None);
+
+        // Verify LIMMAT_COMMIT is still set
+        assert_eq!(
+            env.get("LIMMAT_COMMIT").map(|t| CommitHash::new(*t)),
+            Some(&commit.hash).cloned()
+        );
+    }
+
+    #[tokio::test]
     async fn should_not_start_canceled() {
         let f = TestScriptFixture::builder()
             .num_tests(1)

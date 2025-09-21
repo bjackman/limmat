@@ -44,6 +44,7 @@ pub enum CachePolicy {
     NoCaching,
     ByCommit,
     ByTree,
+    ByCommitWithNotes,
 }
 
 impl CachePolicy {
@@ -54,6 +55,14 @@ impl CachePolicy {
             CachePolicy::NoCaching => None::<Hash>,
             CachePolicy::ByCommit => Some(commit.hash.clone().into()),
             CachePolicy::ByTree => Some(commit.tree.clone().into()),
+            CachePolicy::ByCommitWithNotes => {
+                let notes_part = commit
+                    .limmat_notes_object
+                    .as_ref()
+                    .map(|h| h.as_ref())
+                    .unwrap_or("no-notes");
+                Some(Hash::new(format!("{}:{}", commit.hash, notes_part)))
+            }
         }
     }
 }
@@ -741,6 +750,9 @@ impl<'a> TestJob {
         dep_db_entries: &DepDatabaseEntries,
     ) {
         cmd.env("LIMMAT_COMMIT", &self.test_case.commit_hash);
+        if let Some(notes_object) = &self.test_case.notes_object_hash {
+            cmd.env("LIMMAT_NOTES_OBJECT", notes_object.as_ref() as &str);
+        }
         cmd.env("LIMMAT_ARTIFACTS", artifacts_dir);
         for (k, v) in self.base_env.iter() {
             cmd.env(k, v);
@@ -865,8 +877,19 @@ impl<'a> TestJob {
 pub struct TestCaseId(String);
 
 impl TestCaseId {
-    fn new(commit_hash: &CommitHash, test_name: &TestName) -> Self {
-        Self(format!("{}:{}", commit_hash, test_name))
+    fn new(
+        commit_hash: &CommitHash,
+        test_name: &TestName,
+        notes_object_hash: &Option<Hash>,
+    ) -> Self {
+        Self(format!(
+            "{}:{}:{}",
+            commit_hash,
+            test_name,
+            notes_object_hash
+                .as_ref()
+                .map_or("".to_string(), |h| h.to_string()),
+        ))
     }
 }
 
@@ -878,6 +901,8 @@ pub struct TestCase {
     // Hash that will be used to identify the test result, if caching is
     // enabled. Might be a tree hash, otherwise it matches the commit hash.
     pub cache_hash: Option<Hash>,
+    // Git object hash of notes content (for LIMMAT_NOTES_OBJECT env var)
+    pub notes_object_hash: Option<Hash>,
     pub test: Arc<Test>,
 }
 
@@ -896,6 +921,7 @@ impl TestCase {
     pub fn new(commit: Commit, test: Arc<Test>) -> Self {
         Self {
             cache_hash: test.cache_policy.cache_hash(&commit),
+            notes_object_hash: commit.limmat_notes_object.clone(),
             test,
             commit_hash: commit.hash,
         }
@@ -912,7 +938,7 @@ impl TestCase {
     // doesn't really need to be.
     fn id(&self) -> TestCaseId {
         // The hash_cache is redundant information here so we don't need to include it.
-        TestCaseId::new(&self.commit_hash, &self.test.name)
+        TestCaseId::new(&self.commit_hash, &self.test.name, &self.notes_object_hash)
     }
 }
 
@@ -927,7 +953,7 @@ impl GraphNode for TestCase {
         self.test
             .depends_on
             .iter()
-            .map(|test_name| TestCaseId::new(&self.commit_hash, test_name))
+            .map(|test_name| TestCaseId::new(&self.commit_hash, test_name, &self.notes_object_hash))
             .collect()
     }
 }
@@ -1843,6 +1869,66 @@ mod tests {
         assert_eq!(f.scripts[2].num_runs(&orig_commit.hash), 1);
     }
 
+    #[tokio::test]
+    async fn should_cache_by_commit_with_notes() {
+        let f = TestScriptFixture::builder()
+            .cache_policies([CachePolicy::ByCommitWithNotes])
+            .build()
+            .await;
+
+        // Create a commit
+        let commit = f
+            .repo
+            .commit("test commit for notes caching")
+            .await
+            .expect("couldn't create test commit");
+
+        // Run test on the commit - should run the first time
+        f.manager.set_revisions(vec![commit.clone()]).await.unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 1);
+
+        // Run again on same commit - should be cached (no notes = consistent cache key)
+        f.manager.set_revisions(vec![commit.clone()]).await.unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 1); // Still 1, was cached
+
+        // Add a note to the commit using git CLI
+        let notes_content = "test note content";
+        tokio::process::Command::new("git")
+            .current_dir(f.repo.path())
+            .args(["notes", "--ref=limmat", "add", "-m", notes_content])
+            .arg(&commit.hash)
+            .status()
+            .await
+            .expect("Failed to execute git command");
+
+        // Create a new commit object by re-parsing the same commit hash
+        // This should pick up the newly added notes
+        let commit_with_notes = f
+            .repo
+            .rev_parse(&commit.hash)
+            .await
+            .expect("Failed to re-parse commit")
+            .expect("Commit should exist");
+
+        // Run again - should re-run because notes changed the cache key
+        f.manager
+            .set_revisions(vec![commit_with_notes.clone()])
+            .await
+            .unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 2); // Should be 2 now
+
+        // Run again with same note - should be cached again
+        f.manager
+            .set_revisions(vec![commit_with_notes.clone()])
+            .await
+            .unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 2); // Still 2, was cached
+    }
+
     #[test_case(1, 1 ; "single worktree, one test")]
     #[test_case(4, 1 ; "multiple worktrees, one test")]
     #[test_case(4, 4 ; "multiple worktrees, multiple tests")]
@@ -2097,6 +2183,185 @@ mod tests {
         );
         assert_eq!(env.get("LIMMAT_ARTIFACTS_notdep"), None);
         assert_eq!(env.get("LIMMAT_CONFIG"), Some("/fake/config/path").as_ref());
+    }
+
+    #[tokio::test]
+    async fn test_limmat_notes_object_env() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = Arc::new(TempRepo::new().await.unwrap());
+
+        // Create a commit
+        let commit = repo
+            .commit("test commit")
+            .await
+            .expect("couldn't create test commit");
+
+        // Add a git note to the commit
+        let notes_content = "test note for env var";
+        tokio::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["notes", "--ref=limmat", "add", "-m", notes_content])
+            .arg(&commit.hash)
+            .status()
+            .await
+            .expect("Failed to add git note");
+
+        // Get the notes object hash that should be set
+        let notes_output = tokio::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["notes", "--ref=limmat", "list"])
+            .arg(&commit.hash)
+            .output()
+            .await
+            .expect("Failed to get notes list");
+        let expected_notes_object = String::from_utf8_lossy(&notes_output.stdout)
+            .trim()
+            .to_string();
+
+        let db_dir = TempDir::new().expect("couldn't make temp dir for result DB");
+
+        // Set up test that dumps environment
+        let tests = Dag::new([Arc::new(
+            TestBuilder::new(
+                "env_test",
+                "bash",
+                [
+                    "-c".into(),
+                    OsString::from(format!(
+                        "env >> {0:?}/${{LIMMAT_COMMIT}}_env.txt",
+                        temp_dir.path()
+                    )),
+                ],
+            )
+            .cache_policy(CachePolicy::ByCommitWithNotes)
+            .needs_resources([(ResourceKey::Worktree, 1)])
+            .build(),
+        )])
+        .expect("couldn't build test DAG");
+
+        let resource_pools =
+            Pools::new([(ResourceKey::Worktree, worktree_resources(&repo, 1).await)]);
+        let m = Manager::new(
+            repo.clone(),
+            "/fake/config/path",
+            Arc::new(Database::create_or_open(db_dir.path()).expect("couldn't setup result DB")),
+            Arc::new(resource_pools),
+            tests,
+        );
+
+        m.set_revisions([commit.clone()])
+            .await
+            .expect("set_revisions failed");
+        m.settled().await;
+
+        // Read and parse the environment dump
+        let env_path = temp_dir.path().join(format!("{}_env.txt", commit.hash));
+        let env_dump = fs::read_to_string(&env_path).unwrap_or_else(|_| {
+            panic!(
+                "couldn't read env dumped from test script at {}",
+                env_path.display()
+            )
+        });
+        let env: HashMap<&str, &str> = env_dump
+            .trim()
+            .split("\n")
+            .filter_map(|line| {
+                let parts: Vec<_> = line.splitn(2, "=").collect();
+                if parts.len() != 2 {
+                    return None;
+                }
+                Some((parts[0], parts[1]))
+            })
+            .collect();
+
+        // Verify LIMMAT_NOTES_OBJECT is set correctly
+        assert_eq!(
+            env.get("LIMMAT_NOTES_OBJECT"),
+            Some(expected_notes_object.as_str()).as_ref()
+        );
+
+        // Also verify LIMMAT_COMMIT is still set
+        assert_eq!(
+            env.get("LIMMAT_COMMIT").map(|t| CommitHash::new(*t)),
+            Some(&commit.hash).cloned()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_limmat_notes_object_env_no_notes() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = Arc::new(TempRepo::new().await.unwrap());
+
+        // Create a commit WITHOUT notes
+        let commit = repo
+            .commit("test commit without notes")
+            .await
+            .expect("couldn't create test commit");
+
+        let db_dir = TempDir::new().expect("couldn't make temp dir for result DB");
+
+        // Set up test that dumps environment
+        let tests = Dag::new([Arc::new(
+            TestBuilder::new(
+                "env_test",
+                "bash",
+                [
+                    "-c".into(),
+                    OsString::from(format!(
+                        "env >> {0:?}/${{LIMMAT_COMMIT}}_env.txt",
+                        temp_dir.path()
+                    )),
+                ],
+            )
+            .cache_policy(CachePolicy::ByCommitWithNotes)
+            .needs_resources([(ResourceKey::Worktree, 1)])
+            .build(),
+        )])
+        .expect("couldn't build test DAG");
+
+        let resource_pools =
+            Pools::new([(ResourceKey::Worktree, worktree_resources(&repo, 1).await)]);
+        let m = Manager::new(
+            repo.clone(),
+            "/fake/config/path",
+            Arc::new(Database::create_or_open(db_dir.path()).expect("couldn't setup result DB")),
+            Arc::new(resource_pools),
+            tests,
+        );
+
+        m.set_revisions([commit.clone()])
+            .await
+            .expect("set_revisions failed");
+        m.settled().await;
+
+        // Read and parse the environment dump
+        let env_path = temp_dir.path().join(format!("{}_env.txt", commit.hash));
+        let env_dump = fs::read_to_string(&env_path).unwrap_or_else(|_| {
+            panic!(
+                "couldn't read env dumped from test script at {}",
+                env_path.display()
+            )
+        });
+        let env: HashMap<&str, &str> = env_dump
+            .trim()
+            .split("\n")
+            .filter_map(|line| {
+                let parts: Vec<_> = line.splitn(2, "=").collect();
+                if parts.len() != 2 {
+                    return None;
+                }
+                Some((parts[0], parts[1]))
+            })
+            .collect();
+
+        // Verify LIMMAT_NOTES_OBJECT is NOT set when there are no notes
+        assert_eq!(env.get("LIMMAT_NOTES_OBJECT"), None);
+
+        // Verify LIMMAT_COMMIT is still set
+        assert_eq!(
+            env.get("LIMMAT_COMMIT").map(|t| CommitHash::new(*t)),
+            Some(&commit.hash).cloned()
+        );
     }
 
     #[tokio::test]

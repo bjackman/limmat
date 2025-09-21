@@ -488,6 +488,7 @@ mod tests {
             test_case: TestCase {
                 commit_hash: commit_hash.clone(),
                 cache_hash: Some(commit_hash.clone().into()),
+                notes_object_hash: None, // This is just a fake test case
                 test: test.clone(),
             },
             status,

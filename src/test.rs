@@ -875,8 +875,8 @@ impl TestCaseId {
 pub struct TestCase {
     // Commit that will be checked out to run the test.
     pub commit_hash: CommitHash,
-    // Hash that will be used to identify the test result. Might be a tree hash,
-    // otherwise it matches the commit hash.
+    // Hash that will be used to identify the test result, if caching is
+    // enabled. Might be a tree hash, otherwise it matches the commit hash.
     pub cache_hash: Option<Hash>,
     pub test: Arc<Test>,
 }

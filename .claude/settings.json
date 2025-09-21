@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo --version)"
+      "Bash(cargo --version)",
+      "Bash(cargo check)"
     ],
     "deny": [],
     "ask": []

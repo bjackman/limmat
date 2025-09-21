@@ -7,7 +7,10 @@ use std::{
     path::{Path, PathBuf},
     pin::pin,
     process::Stdio,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -24,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     process::{Child, Command},
     select,
-    sync::{broadcast, watch, Semaphore},
+    sync::{broadcast, watch, Notify, Semaphore},
     time::sleep,
 };
 use tokio_util::sync::CancellationToken;
@@ -212,6 +215,10 @@ pub struct Manager<W: Worktree> {
     // pretty strong implicit assumptions about this field.
     job_cts: Mutex<HashMap<TestCaseId, CancellationToken>>,
     job_counter: JobCounter,
+    // Tracks actual job completion independent of resource acquisition
+    active_jobs: Arc<AtomicUsize>,
+    // Notifies when all active jobs are complete
+    active_jobs_notify: Arc<Notify>,
     notif_tx: broadcast::Sender<Arc<Notification>>,
     tests: TestDag,
     // Pools contains sets of intangible arbitrary "resources" that can be used to throttle test
@@ -251,6 +258,8 @@ impl<W: Worktree + Sync + Send + 'static> Manager<W> {
             notif_tx: result_tx,
             job_cts: Mutex::new(HashMap::new()),
             job_counter: JobCounter::new(),
+            active_jobs: Arc::new(AtomicUsize::new(0)),
+            active_jobs_notify: Arc::new(Notify::new()),
             tests,
             resource_pools,
             result_db,
@@ -358,6 +367,7 @@ impl<W: Worktree + Sync + Send + 'static> Manager<W> {
                 .with_sem(self.job_sem.clone())
                 .with_token(self.job_counter.get())
                 .with_global_notif(self.notif_tx.clone())
+                .with_active_jobs_counter(self.active_jobs.clone(), self.active_jobs_notify.clone())
                 .build();
                 jobs.insert(test_case.id(), job);
                 Ok(jobs)
@@ -384,8 +394,18 @@ impl<W: Worktree + Sync + Send + 'static> Manager<W> {
     }
 
     // Completes once there are no pending jobs or results.
+    // This now properly waits for actual job completion rather than just resource allocation.
     pub async fn settled(&self) {
+        // First wait for all jobs to be scheduled (avoids resource deadlock)
         self.job_counter.zero().await;
+
+        // Then wait for all jobs to actually complete
+        loop {
+            if self.active_jobs.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            self.active_jobs_notify.notified().await;
+        }
     }
 
     pub fn into_resource_pools(self) -> Arc<Pools> {
@@ -407,6 +427,10 @@ struct TestStatusNotifier {
     // what it's actually designed for and using it that way makes for
     // extremely weird code.
     completion_tx: broadcast::Sender<TestOutcome>,
+    // Counter to track active jobs independent of resource acquisition
+    active_jobs: Option<Arc<AtomicUsize>>,
+    // Notify when job completes
+    active_jobs_notify: Option<Arc<Notify>>,
 }
 
 impl TestStatusNotifier {
@@ -416,7 +440,15 @@ impl TestStatusNotifier {
             test_case,
             global_tx,
             completion_tx,
+            active_jobs: None,
+            active_jobs_notify: None,
         }
+    }
+
+    fn with_active_jobs_counter(mut self, counter: Arc<AtomicUsize>, notify: Arc<Notify>) -> Self {
+        self.active_jobs = Some(counter);
+        self.active_jobs_notify = Some(notify);
+        self
     }
 
     // Get notified when the job on the other end of this notifier is complete.
@@ -427,6 +459,26 @@ impl TestStatusNotifier {
     // Report a general update to the status of the test job.
     pub fn notify(&self, status: &TestStatus) {
         debug!("{:?}: {}", self.test_case, status);
+
+        // Track active jobs independent of resource acquisition
+        if let Some(counter) = &self.active_jobs {
+            match status {
+                TestStatus::Started => {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+                TestStatus::Finished(_) => {
+                    let prev = counter.fetch_sub(1, Ordering::SeqCst);
+                    if prev == 1 {
+                        // Last job finished, notify waiters
+                        if let Some(notify) = &self.active_jobs_notify {
+                            notify.notify_waiters();
+                        }
+                    }
+                }
+                _ => {} // Enqueued doesn't count as active
+            }
+        }
+
         // Inner failure means nobody is listening. This is expected when running unit tests.
         let notif = Arc::new(Notification {
             test_case: self.test_case.clone(),
@@ -534,6 +586,8 @@ pub struct TestJobBuilder {
     env: Arc<Vec<(String, String)>>,
     wait_for: Vec<(TestName, broadcast::Receiver<TestOutcome>)>,
     global_tx: Option<broadcast::Sender<Arc<Notification>>>,
+    active_jobs: Option<Arc<AtomicUsize>>,
+    active_jobs_notify: Option<Arc<Notify>>,
     sem: Option<Arc<Semaphore>>,
 }
 
@@ -553,6 +607,8 @@ impl TestJobBuilder {
             wait_for,
             token: None,
             global_tx: None,
+            active_jobs: None,
+            active_jobs_notify: None,
             sem: None,
         }
     }
@@ -577,14 +633,32 @@ impl TestJobBuilder {
         self
     }
 
+    // Have this job also update the active jobs counter.
+    pub fn with_active_jobs_counter(
+        mut self,
+        counter: Arc<AtomicUsize>,
+        notify: Arc<Notify>,
+    ) -> Self {
+        self.active_jobs = Some(counter);
+        self.active_jobs_notify = Some(notify);
+        self
+    }
+
     pub fn build(self) -> TestJob {
+        let mut notifier = TestStatusNotifier::new(self.test_case.clone(), self.global_tx);
+        if let Some(counter) = self.active_jobs {
+            if let Some(notify) = self.active_jobs_notify {
+                notifier = notifier.with_active_jobs_counter(counter, notify);
+            }
+        }
+
         TestJob {
             ct: self.ct,
-            test_case: self.test_case.clone(),
+            test_case: self.test_case,
             _token: self.token,
             base_env: self.env,
             wait_for: self.wait_for,
-            notifier: TestStatusNotifier::new(self.test_case, self.global_tx),
+            notifier,
             sem: self.sem,
         }
     }

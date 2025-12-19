@@ -2021,6 +2021,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_notes_env() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = Arc::new(TempRepo::new().await.unwrap());
+        let commit_with_note = repo
+            .commit("hello,")
+            .await
+            .expect("couldn't create test commit");
+
+        // Add a note to the commit
+        repo.git(["notes", "--ref=refs/notes/limmat", "add", "-m", "note1"])
+            .await
+            .arg(&commit_with_note.hash)
+            .execute()
+            .await
+            .expect("failed to add note");
+
+        let commit_without_note = repo
+            .commit("bye,")
+            .await
+            .expect("couldn't create test commit");
+
+        // Get the note hash to verify against
+        let note_hash_output = repo
+            .git(["rev-parse"])
+            .await
+            .arg(format!("refs/notes/limmat:{}", commit_with_note.hash))
+            .output()
+            .await
+            .expect("failed to get note hash");
+        let note_hash = String::from_utf8(note_hash_output.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let db_dir = TempDir::new().expect("couldn't make temp dir for result DB");
+
+        // Set up a test that dumps environment
+        let tests = Dag::new([Arc::new(
+            TestBuilder::new(
+                "env_test",
+                "bash",
+                [
+                    "-c".into(),
+                    OsString::from(format!(
+                        "env >> {0:?}/${{LIMMAT_COMMIT}}_env.txt",
+                        temp_dir.path()
+                    )),
+                ],
+            )
+            .needs_resources([(ResourceKey::Worktree, 1)])
+            .cache_policy(CachePolicy::ByCommitWithNotes)
+            .build(),
+        )])
+        .expect("couldn't build test DAG");
+
+        let resource_pools =
+            Pools::new([(ResourceKey::Worktree, worktree_resources(&repo, 1).await)].into_iter());
+
+        let m = Manager::new(
+            repo.clone(),
+            "/fake/config/path",
+            Arc::new(Database::create_or_open(db_dir.path()).expect("couldn't setup result DB")),
+            Arc::new(resource_pools),
+            tests,
+        );
+
+        m.set_revisions([commit_with_note.clone(), commit_without_note.clone()])
+            .await
+            .expect("set_revisions failed");
+        m.settled().await;
+
+        // Verify commit WITH note
+        let env_path_with = temp_dir
+            .path()
+            .join(format!("{}_env.txt", commit_with_note.hash));
+        let env_dump_with = fs::read_to_string(&env_path_with).unwrap_or_else(|_| {
+            panic!(
+                "couldn't read env dumped from test script at {}",
+                env_path_with.display()
+            )
+        });
+
+        let notes_env = env_dump_with
+            .lines()
+            .find(|l| l.starts_with("LIMMAT_NOTES_OBJECT="))
+            .expect("LIMMAT_NOTES_OBJECT not found in env for commit with note");
+
+        assert_eq!(
+            notes_env.split('=').nth(1).unwrap(),
+            note_hash,
+            "LIMMAT_NOTES_OBJECT didn't match expected hash"
+        );
+
+        // Verify commit WITHOUT note
+        let env_path_without = temp_dir
+            .path()
+            .join(format!("{}_env.txt", commit_without_note.hash));
+        let env_dump_without = fs::read_to_string(&env_path_without).unwrap_or_else(|_| {
+            panic!(
+                "couldn't read env dumped from test script at {}",
+                env_path_without.display()
+            )
+        });
+
+        assert!(
+            !env_dump_without
+                .lines()
+                .any(|l| l.starts_with("LIMMAT_NOTES_OBJECT=")),
+            "LIMMAT_NOTES_OBJECT should NOT be present for commit without note"
+        );
+    }
+
+    #[tokio::test]
     async fn test_job_env() {
         let temp_dir = TempDir::new().unwrap();
         let repo = Arc::new(TempRepo::new().await.unwrap());

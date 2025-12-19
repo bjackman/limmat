@@ -489,6 +489,7 @@ mod tests {
                 commit_hash: commit_hash.clone(),
                 cache_hash: Some(commit_hash.clone().into()),
                 test: test.clone(),
+                notes_hash: None,
             },
             status,
         }

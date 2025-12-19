@@ -151,6 +151,13 @@ That means Limmat won't re-run tests unless the actual repository contents
 change - for example changes to the commit message won't invalidate cache
 results.
 
+There is also `cache = "by_commit_with_notes"`. This is like `by_commit` (the
+default), but it also incorporates the hash of the git note attached to the
+commit under `refs/notes/limmat`. This allows you to attach configuration to
+specific commits without modifying the commit itself (e.g. using `git notes --ref
+refs/notes/limmat add -m ...`). The hash of the note object is passed to the
+test script in the `LIMMAT_NOTES_OBJECT` environment variable.
+
 If the test is terminated by a signal, it isn't considered to have produced a
 result: instead of "success" or "failure" it's an "error". Errors aren't cached.
 

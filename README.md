@@ -151,6 +151,42 @@ That means Limmat won't re-run tests unless the actual repository contents
 change - for example changes to the commit message won't invalidate cache
 results.
 
+For fine-grained cache control, you can use `cache = "by_commit_with_notes"`.
+This creates cache keys based on both the commit hash and git notes attached
+to the commit under the `refs/notes/limmat` ref. This allows you to
+invalidate the cache for specific commits by adding or modifying notes:
+
+```bash
+# This will invalidate the cache for this commit
+git notes --ref=limmat add -m "force rebuild" abc1234
+
+# Different note content = different cache key
+git notes --ref=limmat add -m "test with flag X" abc1234 --force
+```
+
+Your test scripts can access the exact notes content that was used for the cache key:
+
+```bash
+#!/bin/bash
+# Example test script using git notes for configuration
+
+if [[ -n "$LIMMAT_NOTES_OBJECT" ]]; then
+    # Get the exact notes content used for cache key generation
+    notes_content=$(git cat-file -p "$LIMMAT_NOTES_OBJECT")
+    echo "Test configuration from notes: $notes_content"
+    
+    # Parse test parameters from notes
+    if echo "$notes_content" | grep -q "rebuild"; then
+        echo "Force rebuild requested"
+        make clean
+    fi
+else
+    echo "No notes attached to this commit, using defaults"
+fi
+
+make test
+```
+
 If the test is terminated by a signal, it isn't considered to have produced a
 result: instead of "success" or "failure" it's an "error". Errors aren't cached.
 
@@ -323,6 +359,7 @@ These environment variables are passed to your job.
 | `LIMMAT_ORIGIN`                       | Path of the main repository worktree (i.e. `--repo`).                                     |
 | `LIMMAT_COMMIT`                       | Hash of the commit to be tested.                                                          |
 | `LIMMAT_CONFIG`                       | Path of the config file.                                                          |
+| `LIMMAT_NOTES_OBJECT`                 | Git object hash of the notes content used for cache key generation (when using `cache = "by_commit_with_notes"`). Empty if no notes exist. |
 | `LIMMAT_RESOURCE_<resource_name>_<n>` | Values for [resources](#resources) used by the test.                                      |
 | `LIMMAT_RESOURCE_<resource_name>`     | If the test only uses one of a resource, shorthand for `LIMMAT_RESOURCE_<resource_name>_0` |
 | `LIMMAT_ARTIFACTS_<job_name>`         | If the test depends on `job_name`, this directory contains that job's [artifacts](#artifacts). |
@@ -375,6 +412,13 @@ git clean -fdx
 make -j defconfig
 make -j16 vmlinux O=$LIMMAT_ARTIFACTS
 """
+
+# Run stress tests that can be configured via git notes
+[[tests]]
+name = "stress_test"
+cache = "by_commit_with_notes"
+command = "stress_test.sh"
+depends_on = ["kbuild"]
 
 # Check the locally-built kernel boots in a QEMU VM.
 [[tests]]

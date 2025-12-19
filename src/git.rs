@@ -172,6 +172,7 @@ impl Worktree for PersistentWorktree {
 pub struct Commit {
     pub hash: CommitHash,
     pub tree: TreeHash,
+    pub limmat_notes_object: Option<Hash>,
 }
 
 impl Commit {
@@ -180,6 +181,7 @@ impl Commit {
         Self {
             hash: CommitHash::new("080b8ecbad3e34e55c5a035af80100f73b742a8d"),
             tree: TreeHash::new("6366d790125291272542a6b40f6fd3400e080821"),
+            limmat_notes_object: None,
         }
     }
 }
@@ -457,6 +459,65 @@ pub trait Worktree: Debug + Sync {
         })
     }
 
+    async fn get_notes_object_hash(
+        &self,
+        commit_hash: &CommitHash,
+    ) -> anyhow::Result<Option<Hash>> {
+        debug!(
+            "Looking for git notes for commit {}",
+            commit_hash.as_ref() as &str
+        );
+        let output = self
+            .git(["notes", "--ref=limmat", "list"])
+            .await
+            .arg(commit_hash.as_ref() as &str)
+            .output()
+            .await
+            .context("failed to run 'git notes list'")?;
+
+        debug!("git notes list exit code: {:?}", output.status.code());
+        debug!(
+            "git notes list stdout: {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        debug!(
+            "git notes list stderr: {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Exit code 1 means no notes found, which is fine
+        if output.status.code() == Some(1) {
+            debug!("No notes found for commit {}", commit_hash.as_ref() as &str);
+            return Ok(None);
+        }
+
+        if !output.status.success() {
+            // Other error - treat as no notes to be safe
+            debug!(
+                "git notes list failed with code {:?}, treating as no notes",
+                output.status.code()
+            );
+            return Ok(None);
+        }
+
+        let notes_output = String::from_utf8_lossy(&output.stdout);
+        let notes_object_hash = notes_output.trim();
+        if notes_object_hash.is_empty() {
+            debug!(
+                "Empty notes output for commit {}",
+                commit_hash.as_ref() as &str
+            );
+            return Ok(None);
+        }
+
+        debug!(
+            "Found notes object hash {} for commit {}",
+            notes_object_hash,
+            commit_hash.as_ref() as &str
+        );
+        Ok(Some(Hash::new(notes_object_hash.to_string())))
+    }
+
     // None means we successfully looked it up but it didn't exist.
     async fn rev_parse<S>(&self, rev_spec: S) -> anyhow::Result<Option<Commit>>
     where
@@ -488,9 +549,14 @@ pub trait Worktree: Debug + Sync {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+
+        let commit_hash = CommitHash::new(parts[0]);
+        let limmat_notes_object = self.get_notes_object_hash(&commit_hash).await?;
+
         Ok(Some(Commit {
-            hash: CommitHash::new(parts[0]),
+            hash: commit_hash,
             tree: TreeHash::new(parts[1]),
+            limmat_notes_object,
         }))
     }
 }

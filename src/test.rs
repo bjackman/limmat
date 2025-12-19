@@ -44,6 +44,7 @@ pub enum CachePolicy {
     NoCaching,
     ByCommit,
     ByTree,
+    ByCommitWithNotes,
 }
 
 impl CachePolicy {
@@ -54,6 +55,18 @@ impl CachePolicy {
             CachePolicy::NoCaching => None::<Hash>,
             CachePolicy::ByCommit => Some(commit.hash.clone().into()),
             CachePolicy::ByTree => Some(commit.tree.clone().into()),
+            CachePolicy::ByCommitWithNotes => {
+                let mut hasher = sha3::Sha3_256::new();
+                use sha3::Digest;
+                let h: &str = commit.hash.as_ref();
+                hasher.update(h.as_bytes());
+                if let Some(notes) = &commit.limmat_notes_hash {
+                    hasher.update(b"\0");
+                    let n: &str = notes.as_ref();
+                    hasher.update(n.as_bytes());
+                }
+                Some(Hash::new(hex::encode(hasher.finalize())))
+            }
         }
     }
 }
@@ -741,6 +754,9 @@ impl<'a> TestJob {
         dep_db_entries: &DepDatabaseEntries,
     ) {
         cmd.env("LIMMAT_COMMIT", &self.test_case.commit_hash);
+        if let Some(h) = &self.test_case.notes_hash {
+            cmd.env("LIMMAT_NOTES_OBJECT", h);
+        }
         cmd.env("LIMMAT_ARTIFACTS", artifacts_dir);
         for (k, v) in self.base_env.iter() {
             cmd.env(k, v);
@@ -865,8 +881,8 @@ impl<'a> TestJob {
 pub struct TestCaseId(String);
 
 impl TestCaseId {
-    fn new(commit_hash: &CommitHash, test_name: &TestName) -> Self {
-        Self(format!("{}:{}", commit_hash, test_name))
+    fn new(commit_hash: &CommitHash, test_name: &TestName, storage_hash: &Hash) -> Self {
+        Self(format!("{}:{}:{}", commit_hash, test_name, storage_hash))
     }
 }
 
@@ -879,6 +895,7 @@ pub struct TestCase {
     // enabled. Might be a tree hash, otherwise it matches the commit hash.
     pub cache_hash: Option<Hash>,
     pub test: Arc<Test>,
+    pub notes_hash: Option<Hash>,
 }
 
 impl Debug for TestCase {
@@ -898,6 +915,7 @@ impl TestCase {
             cache_hash: test.cache_policy.cache_hash(&commit),
             test,
             commit_hash: commit.hash,
+            notes_hash: commit.limmat_notes_hash,
         }
     }
 
@@ -911,8 +929,7 @@ impl TestCase {
     // TODO: this is always getting built on-demand all over the place, it
     // doesn't really need to be.
     fn id(&self) -> TestCaseId {
-        // The hash_cache is redundant information here so we don't need to include it.
-        TestCaseId::new(&self.commit_hash, &self.test.name)
+        TestCaseId::new(&self.commit_hash, &self.test.name, self.storage_hash())
     }
 }
 
@@ -927,7 +944,7 @@ impl GraphNode for TestCase {
         self.test
             .depends_on
             .iter()
-            .map(|test_name| TestCaseId::new(&self.commit_hash, test_name))
+            .map(|test_name| TestCaseId::new(&self.commit_hash, test_name, self.storage_hash()))
             .collect()
     }
 }
@@ -1120,7 +1137,7 @@ mod tests {
     use crate::{
         git::{
             test_utils::{TempRepo, WorktreeExt},
-            CommitHash, TempWorktree,
+            CommitHash, TempWorktree, WorktreePriv,
         },
         resource::Resource,
         test_utils::{path_exists, timeout_5s},
@@ -1841,6 +1858,69 @@ mod tests {
         assert_eq!(f.scripts[0].num_runs(&orig_commit.hash), 2);
         assert_eq!(f.scripts[1].num_runs(&orig_commit.hash), 1);
         assert_eq!(f.scripts[2].num_runs(&orig_commit.hash), 1);
+    }
+
+    #[tokio::test]
+    async fn should_cache_results_with_notes() {
+        let f = TestScriptFixture::builder()
+            .cache_policies([CachePolicy::ByCommitWithNotes, CachePolicy::ByCommit])
+            .build()
+            .await;
+
+        // Initial commit
+        let commit = f
+            .repo
+            .commit("initial")
+            .await
+            .expect("couldn't create test commit");
+
+        // Add a note to the commit
+        f.repo
+            .git(["notes", "--ref=refs/notes/limmat", "add", "-m", "note1"])
+            .await
+            .arg(&commit.hash)
+            .execute()
+            .await
+            .expect("failed to add note");
+
+        // Run tests
+        f.manager.set_revisions(vec![commit.clone()]).await.unwrap();
+        f.manager.settled().await;
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 1);
+        assert_eq!(f.scripts[1].num_runs(&commit.hash), 1);
+
+        // Change the note (update to note2)
+        f.repo
+            .git([
+                "notes",
+                "--ref=refs/notes/limmat",
+                "add",
+                "-f",
+                "-m",
+                "note2",
+            ])
+            .await
+            .arg(&commit.hash)
+            .execute()
+            .await
+            .expect("failed to update note");
+
+        // Run tests again
+        f.manager.set_revisions(vec![commit.clone()]).await.unwrap();
+        f.manager.settled().await;
+
+        // ByCommitWithNotes should re-run because notes changed
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 2);
+        // ByCommit should NOT re-run because commit hash is same
+        assert_eq!(f.scripts[1].num_runs(&commit.hash), 1);
+
+        // Run again with same note
+        f.manager.set_revisions(vec![commit.clone()]).await.unwrap();
+        f.manager.settled().await;
+
+        // Neither should re-run
+        assert_eq!(f.scripts[0].num_runs(&commit.hash), 2);
+        assert_eq!(f.scripts[1].num_runs(&commit.hash), 1);
     }
 
     #[test_case(1, 1 ; "single worktree, one test")]

@@ -464,9 +464,11 @@ pub trait Worktree: Debug + Sync {
     {
         // We don't use log_n1 here because we want to check the exit code,
         // that API is designed for users who assume the revision exists.
-        let mut cmd = self.git(["log", "-n1", "--format=%H %T"]).await;
-        let cmd = cmd.arg(rev_spec);
-        let output = cmd.output().await.context("failed to run 'git log -n1'")?;
+        let output = {
+            let mut cmd = self.git(["log", "-n1", "--format=%H %T"]).await;
+            let cmd = cmd.arg(rev_spec);
+            cmd.output().await.context("failed to run 'git log -n1'")?
+        };
         // Hack: empirically, git returns 128 when the range is invalid, it's not documented
         // but hopefully this is stable behaviour that we're supposed to be able to rely on for
         // this...?
@@ -482,7 +484,7 @@ pub trait Worktree: Debug + Sync {
         let parts: Vec<&str> = out_string.trim().splitn(2, " ").collect();
         if parts.len() != 2 {
             bail!(
-                "Failed to parse result of {cmd:?} - {out_string:?}\nstderr: {:?}",
+                "Failed to parse result of 'git log -n1' - {out_string:?}\nstderr: {:?}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }

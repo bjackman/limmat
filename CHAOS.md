@@ -238,11 +238,8 @@ action which apparently runs cargo-deb and
 [this](https://github.com/marketplace/actions/github-action-publish-binaries)
 which apparently publishes build artifacts to GH releases, but it's not clear to
 me how you're supposed to plumb these things together. I'm not too sure if I
-care either. So, for now(TM) I'm just manually building the .deb and a binary,
-and uploading them to the Releases page in the Github UI.
-
-After creating a new release, go into the Github UI and upload the x86 Linux
-binary and .deb files. Build them with:
+care either. I used to manually build them and upload them to the Releases page
+in the Github UI. I can no longer be bothered to do that. Here's how I used to:
 
 - `cargo build -r                        # Upload this as limmat-linux-amd64`
 - `cargo install cargo-deb && cargo deb  # This will already have the correct filename`

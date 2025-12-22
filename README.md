@@ -37,15 +37,6 @@ repository, for example:
 nix run github:bjackman/limmat -- --help
 ```
 
-### From GitHub Releases
-
-There are pre-built Linux x86 binaries in the [latest GitHub
-Release](https://github.com/bjackman/limmat/releases/latest).
-
-If you prefer to have the tool tracked by your package manager, you can download
-a `.deb` from there and install it with `dpkg -i $pkg.deb`. Or you can just
-download the raw binary, it has no dependencies.
-
 ## Usage
 
 Write a config file (details [below](#configuration)) in `limmat.toml` or `.limmat.toml`, and

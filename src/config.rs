@@ -11,6 +11,7 @@ use std::{
 use anyhow::{bail, Context as _};
 #[allow(unused_imports)]
 use log::debug;
+use regex::Regex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use sha3::{Digest, Sha3_256};
@@ -240,16 +241,35 @@ impl Config {
             .collect()
     }
 
-    fn parse_tests<'a>(
+    fn parse_tests<S: AsRef<str>>(
         &self,
         resource_tokens: &ResourceTokens,
-        skip_tests: impl IntoIterator<Item = &'a str>,
+        skip_tests: impl IntoIterator<Item = S>,
+        only_tests: impl IntoIterator<Item = S>,
     ) -> anyhow::Result<Dag<Arc<test::Test>>> {
-        let skip_tests: HashSet<&'a str> = skip_tests.into_iter().collect();
+        let skip_tests: Vec<Regex> = skip_tests
+            .into_iter()
+            .map(|s| Regex::new(s.as_ref()))
+            .collect::<Result<Vec<_>, _>>()
+            .context("compiling skip_tests regexes")?;
+
+        let only_tests: Vec<Regex> = only_tests
+            .into_iter()
+            .map(|s| Regex::new(s.as_ref()))
+            .collect::<Result<Vec<_>, _>>()
+            .context("compiling tests filter regexes")?;
+
         let tests = Dag::new(
             self.tests
                 .iter()
-                .filter(|t| !skip_tests.contains(t.name.as_str()))
+                .filter(|t| {
+                    if !only_tests.is_empty() {
+                         if !only_tests.iter().any(|r| r.is_match(&t.name)) {
+                             return false;
+                         }
+                    }
+                    !skip_tests.iter().any(|r| r.is_match(&t.name))
+                })
                 .cloned(),
         )
         .context("parsing test dependency graph")?;
@@ -307,13 +327,14 @@ pub struct ParsedConfig {
 }
 
 impl ParsedConfig {
-    pub fn new<'a>(
+    pub fn new<S: AsRef<str>>(
         config: Config,
         source_path: impl Into<PathBuf>,
-        skip_tests: impl IntoIterator<Item = &'a str>,
+        skip_tests: impl IntoIterator<Item = S>,
+        only_tests: impl IntoIterator<Item = S>,
     ) -> anyhow::Result<Self> {
         let resource_tokens = config.parse_resource_tokens();
-        let tests = config.parse_tests(&resource_tokens, skip_tests)?;
+        let tests = config.parse_tests(&resource_tokens, skip_tests, only_tests)?;
         let resources: HashMap<ResourceKey, Vec<resource::Resource>> = resource_tokens
             .into_iter()
             .map(|(key, tokens)| {
@@ -384,7 +405,7 @@ mod tests {
         );
         for toml in toml_blocks {
             expect_that!(
-                toml::from_str(toml).map(|config| ParsedConfig::new(config, "/fake/path", vec![])),
+                toml::from_str(toml).map(|config| ParsedConfig::new(config, "/fake/path", Vec::<String>::new(), Vec::<String>::new())),
                 ok(anything())
             );
         }

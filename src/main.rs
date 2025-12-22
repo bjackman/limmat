@@ -75,8 +75,12 @@ struct Args {
     /// Git binary - default will use $PATH.
     #[arg(long, default_value_t = {DisplayablePathBuf("git".into())}, global = true)]
     git_binary: DisplayablePathBuf,
+    /// Regexes of tests to skip.
     #[arg(long, global = true)]
     skip_test: Vec<String>,
+    /// Regexes of tests to include. If specified, only tests matching these regexes will be run.
+    #[arg(long, global = true)]
+    tests: Vec<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -726,6 +730,7 @@ async fn do_main() -> anyhow::Result<ExitCode> {
         config,
         config_path,
         args.skip_test.iter().map(|s| s.as_str()),
+        args.tests.iter().map(|s| s.as_str()),
     )?;
 
     let repo = git::PersistentWorktree {

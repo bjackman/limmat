@@ -971,3 +971,165 @@ async fn skip_test() {
     // will return an inner error).
     assert_that!(result, err(anything()));
 }
+
+#[googletest::test]
+#[tokio::test]
+async fn skip_test_regex() {
+    let temp_dir = TempDir::new().unwrap();
+    let builder = LimmatChildBuilder::new(format!(
+        r##"
+            [[tests]]
+            name = "test-foo"
+            command = "echo >> {0}/ran-foo"
+
+            [[tests]]
+            name = "test-bar"
+            command = "echo >> {0}/ran-bar"
+
+            [[tests]]
+            name = "other"
+            command = "echo hello world"
+        "##,
+        temp_dir.path().display(),
+    ))
+    .await
+    .unwrap();
+
+    let child = builder
+        .start(["watch", "HEAD^", "--skip-test", "test-.*"])
+        .await
+        .unwrap();
+
+    // To try and detect if it's running something it shouldn't we'll just wait until it ran
+    // something it should... then a bit longer.
+    timeout(
+        Duration::from_secs(5),
+        child.result_exists("other", "HEAD"),
+    )
+    .await
+    .expect("result not found after 5s")
+    .expect("failed to check for test result");
+
+    let result = timeout(
+        Duration::from_secs(1),
+        child.result_exists("test-foo", "HEAD"),
+    )
+    .await;
+    assert_that!(result, err(anything()));
+
+    let result = timeout(
+        Duration::from_secs(1),
+        child.result_exists("test-bar", "HEAD"),
+    )
+    .await;
+    assert_that!(result, err(anything()));
+}
+
+#[googletest::test]
+#[tokio::test]
+async fn include_test_regex() {
+    let temp_dir = TempDir::new().unwrap();
+    let builder = LimmatChildBuilder::new(format!(
+        r##"
+            [[tests]]
+            name = "test-foo"
+            command = "echo >> {0}/ran-foo"
+
+            [[tests]]
+            name = "test-bar"
+            command = "echo >> {0}/ran-bar"
+
+            [[tests]]
+            name = "other"
+            command = "echo hello world"
+        "##,
+        temp_dir.path().display(),
+    ))
+    .await
+    .unwrap();
+
+    let child = builder
+        .start(["watch", "HEAD^", "--tests", "test-.*"])
+        .await
+        .unwrap();
+
+    // Foo and Bar should run.
+    timeout(
+        Duration::from_secs(5),
+        child.result_exists("test-foo", "HEAD"),
+    )
+    .await
+    .expect("result not found after 5s")
+    .expect("failed to check for test result");
+
+    timeout(
+        Duration::from_secs(5),
+        child.result_exists("test-bar", "HEAD"),
+    )
+    .await
+    .expect("result not found after 5s")
+    .expect("failed to check for test result");
+
+    // Other should not run.
+    let result = timeout(
+        Duration::from_secs(1),
+        child.result_exists("other", "HEAD"),
+    )
+    .await;
+    assert_that!(result, err(anything()));
+}
+
+#[googletest::test]
+#[tokio::test]
+async fn include_and_exclude_test_regex() {
+    let temp_dir = TempDir::new().unwrap();
+    let builder = LimmatChildBuilder::new(format!(
+        r##"
+            [[tests]]
+            name = "test-foo"
+            command = "echo >> {0}/ran-foo"
+
+            [[tests]]
+            name = "test-bar"
+            command = "echo >> {0}/ran-bar"
+
+            [[tests]]
+            name = "other"
+            command = "echo hello world"
+        "##,
+        temp_dir.path().display(),
+    ))
+    .await
+    .unwrap();
+
+    // Include test-.* but exclude test-bar
+    let child = builder
+        .start(["watch", "HEAD^", "--tests", "test-.*", "--skip-test", "test-bar"])
+        .await
+        .unwrap();
+
+    // Foo should run.
+    timeout(
+        Duration::from_secs(5),
+        child.result_exists("test-foo", "HEAD"),
+    )
+    .await
+    .expect("result not found after 5s")
+    .expect("failed to check for test result");
+
+    // Bar should NOT run.
+    let result = timeout(
+        Duration::from_secs(1),
+        child.result_exists("test-bar", "HEAD"),
+    )
+    .await;
+    assert_that!(result, err(anything()));
+
+    // Other should NOT run.
+    let result = timeout(
+        Duration::from_secs(1),
+        child.result_exists("other", "HEAD"),
+    )
+    .await;
+    assert_that!(result, err(anything()));
+}

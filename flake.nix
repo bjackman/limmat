@@ -34,7 +34,22 @@
           limmat = naersk.buildPackage {
             src = ./.;
           };
-          default = limmat;
+          # Limmat is hard-coded to depend on some external tools. This is fine
+          # in the real world but in testing scenarios it can be handy to have a
+          # Nix package that just works even in a very pure Nix environment. So
+          # this adds those dependencies explicitly. PATH is suffixed so the
+          # user's version of the tools take precedence.
+          limmat-wrapped = pkgs.stdenv.mkDerivation {
+            pname = "limmat-wrapped";
+            version = limmat.version;
+            src = ./.;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            installPhase = ''
+              makeWrapper ${limmat}/bin/limmat $out/bin/limmat \
+                --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.bash ]}
+            '';
+          };
+          default = limmat-wrapped;
         };
         devShells.default = pkgs.mkShell {
           inputsFrom = [ packages.limmat] ;

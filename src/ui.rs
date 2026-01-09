@@ -406,20 +406,22 @@ impl OutputBuffer {
         result_url_base: &str,
     ) -> Vec<Span<'a>> {
         let status_part = match status {
-            // Note - cancellation is an "error" in the type system but we
-            // don't treat it as an error in the UI.
-            TestStatus::Finished(Err(TestInconclusive::Error(msg))) => {
-                Span::new(msg).with_class(Class::Error)
-            }
+            TestStatus::Enqueued => Span::new("⏳"),
+            TestStatus::Started => Span::new("🏃"),
             TestStatus::Finished(Ok(result)) => {
                 if result.exit_code == 0 {
-                    Span::new("success").with_class(Class::Success)
+                    Span::new("✅").with_class(Class::Success)
                 } else {
-                    Span::new(format!("failed (status {})", result.exit_code))
-                        .with_class(Class::Failure)
+                    Span::new("❌").with_class(Class::Failure)
                 }
             }
-            _ => Span::new(status.to_string()),
+            TestStatus::Finished(Err(inconclusive)) => match inconclusive {
+                // Note - cancellation is an "error" in the type system but we
+                // don't treat it as an error in the UI.
+                TestInconclusive::Canceled => Span::new("🚫"),
+                TestInconclusive::Error(_) => Span::new("💥").with_class(Class::Error),
+                TestInconclusive::ErrorExitCode(_) => Span::new("💥").with_class(Class::Error),
+            },
         }
         .with_url(format!(
             "{}/{}/{}",
@@ -543,9 +545,9 @@ mod tests {
             *strip_ansi_escapes::strip_str(str::from_utf8(buf.as_bytes()).unwrap()),
             eq(format!(
                 "* {commit3} 3\n\
-                | my_test1: Enqueued my_test2: success \n\
+                | my_test1: ⏳ my_test2: ✅ \n\
                 * {commit2} 2\n\
-                | my_test1: oh no my_test2: Started \n",
+                | my_test1: 💥 my_test2: 🏃 \n",
                 commit3 = abbrev(&commit3),
                 commit2 = abbrev(&commit2)
             ))
@@ -604,13 +606,13 @@ mod tests {
                 |\\ \\  \n\
                 | | | \n\
                 | | * {commit2} 2\n\
-                | |   my_test1: oh no my_test2: Started \n\
+                | |   my_test1: 💥 my_test2: 🏃 \n\
                 | * {commit1} 1\n\
                 | | \n\
                 | * {join} join\n\
                 |   \n\
                 * {commit3} 3\n\
-                | my_test1: Enqueued my_test2: success \n",
+                | my_test1: ⏳ my_test2: ✅ \n",
                 merge = abbrev(&merge),
                 commit3 = abbrev(&commit3),
                 commit2 = abbrev(&commit2),

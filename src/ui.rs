@@ -416,6 +416,8 @@ impl OutputBuffer {
                 }
             }
             TestStatus::Finished(Err(inconclusive)) => match inconclusive {
+                // Note - cancellation is an "error" in the type system but we
+                // don't treat it as an error in the UI.
                 TestInconclusive::Canceled => Span::new("🚫"),
                 TestInconclusive::Error(_) => Span::new("💥").with_class(Class::Error),
                 TestInconclusive::ErrorExitCode(_) => Span::new("💥").with_class(Class::Error),

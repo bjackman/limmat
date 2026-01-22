@@ -113,10 +113,6 @@
         "command": {
           "$ref": "#/definitions/Command"
         },
-        "default": {
-          "default": true,
-          "type": "boolean"
-        },
         "depends_on": {
           "default": [],
           "type": "array",
@@ -148,6 +144,11 @@
           "items": {
             "$ref": "#/definitions/Resource"
           }
+        },
+        "run_by_default": {
+          "description": "If this is disabled, the test is only run when explicitly requested in the command-line via the --tests arg.",
+          "default": true,
+          "type": "boolean"
         },
         "separate_outputs": {
           "description": "When false (default), stdout and stderr are merged into output.txt. When true, they are kept separate as stdout.txt and stderr.txt.",

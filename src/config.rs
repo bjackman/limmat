@@ -87,7 +87,9 @@ pub struct Test {
     #[serde(default = "default_requires_worktree")]
     requires_worktree: bool,
     #[serde(default = "default_true")]
-    default: bool,
+    /// If this is disabled, the test is only run when explicitly requested in
+    /// the command-line via the --tests arg.
+    run_by_default: bool,
     // TODO: This should only refer to resource names.
     resources: Option<Vec<Resource>>,
     #[serde(default = "default_shutdown_grace_period")]
@@ -273,7 +275,7 @@ impl Config {
                         if !only_tests.iter().any(|r| r.is_match(&t.name)) {
                             return false;
                         }
-                    } else if !t.default {
+                    } else if !t.run_by_default {
                         return false;
                     }
                     !skip_tests.iter().any(|r| r.is_match(&t.name))
@@ -429,7 +431,7 @@ mod tests {
             [[tests]]
             name = "non_default_test"
             command = ["echo", "hello"]
-            default = false
+            run_by_default = false
         "#;
         let config: Config = toml::from_str(config_toml).unwrap();
 
@@ -454,7 +456,7 @@ mod tests {
             [[tests]]
             name = "B"
             command = ["echo", "B"]
-            default = false
+            run_by_default = false
         "#;
         let config: Config = toml::from_str(config_toml).unwrap();
 

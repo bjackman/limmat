@@ -86,6 +86,8 @@ pub struct Test {
     command: Command,
     #[serde(default = "default_requires_worktree")]
     requires_worktree: bool,
+    #[serde(default = "default_true")]
+    default: bool,
     // TODO: This should only refer to resource names.
     resources: Option<Vec<Resource>>,
     #[serde(default = "default_shutdown_grace_period")]
@@ -112,6 +114,10 @@ pub struct Test {
 }
 
 fn default_requires_worktree() -> bool {
+    true
+}
+
+fn default_true() -> bool {
     true
 }
 
@@ -204,7 +210,7 @@ fn default_shutdown_grace_period() -> u64 {
     60
 }
 
-#[derive(Deserialize, JsonSchema, Debug)]
+#[derive(Deserialize, JsonSchema, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_num_worktrees")]
@@ -264,9 +270,11 @@ impl Config {
                 .iter()
                 .filter(|t| {
                     if !only_tests.is_empty() {
-                         if !only_tests.iter().any(|r| r.is_match(&t.name)) {
-                             return false;
-                         }
+                        if !only_tests.iter().any(|r| r.is_match(&t.name)) {
+                            return false;
+                        }
+                    } else if !t.default {
+                        return false;
                     }
                     !skip_tests.iter().any(|r| r.is_match(&t.name))
                 })
@@ -409,5 +417,57 @@ mod tests {
                 ok(anything())
             );
         }
+    }
+
+    #[googletest::test]
+    fn test_default_filtering() {
+        let config_toml = r#"
+            [[tests]]
+            name = "default_test"
+            command = ["echo", "hello"]
+
+            [[tests]]
+            name = "non_default_test"
+            command = ["echo", "hello"]
+            default = false
+        "#;
+        let config: Config = toml::from_str(config_toml).unwrap();
+
+        // Case 1: No filters. Should only include default_test.
+        let parsed = ParsedConfig::new(config.clone(), "/fake", Vec::<&str>::new(), Vec::<&str>::new()).unwrap();
+        assert_that!(parsed.tests.node(&TestName::new("default_test")), some(anything()));
+        assert_that!(parsed.tests.node(&TestName::new("non_default_test")), none());
+
+        // Case 2: Explicit filter for non_default. Should include it.
+        let parsed = ParsedConfig::new(config, "/fake", Vec::<&str>::new(), vec!["non_default_test"]).unwrap();
+        assert_that!(parsed.tests.node(&TestName::new("non_default_test")), some(anything()));
+    }
+
+    #[googletest::test]
+    fn test_default_dependency_failure() {
+        let config_toml = r#"
+            [[tests]]
+            name = "A"
+            command = ["echo", "A"]
+            depends_on = ["B"]
+
+            [[tests]]
+            name = "B"
+            command = ["echo", "B"]
+            default = false
+        "#;
+        let config: Config = toml::from_str(config_toml).unwrap();
+
+        // Case 1: No filters. A depends on B. B is excluded. Should fail.
+        let res = ParsedConfig::new(config.clone(), "/fake", Vec::<&str>::new(), Vec::<&str>::new());
+        assert_that!(res, err(anything())); // Should be NoSuchChild error context
+
+        // Case 2: Explicitly include A. B is excluded. Should fail.
+        let res = ParsedConfig::new(config.clone(), "/fake", Vec::<&str>::new(), vec!["A"]);
+        assert_that!(res, err(anything()));
+
+         // Case 3: Explicitly include A and B. Should pass.
+        let res = ParsedConfig::new(config, "/fake", Vec::<&str>::new(), vec!["A", "B"]);
+        assert_that!(res, ok(anything()));
     }
 }

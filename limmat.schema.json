@@ -113,6 +113,10 @@
         "command": {
           "$ref": "#/definitions/Command"
         },
+        "default": {
+          "default": true,
+          "type": "boolean"
+        },
         "depends_on": {
           "default": [],
           "type": "array",

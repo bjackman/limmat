@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8](https://github.com/bjackman/limmat/compare/v0.2.7...v0.2.8) - 2026-01-22
+
+### Other
+
+- Rename and document [run_by_]default option
+- Add support for non-default tests in configuration.
+- Fix limmat-wrapped definition
+- cargo update
+- Fix unkillable test jobs while waiting for dependencies
+- Update UI to use emoji status indicators
+- Update UI to use emoji status indicators
+- Add limmat-wrapped package
+- No longer releasing binaries
+
 ## [0.2.7](https://github.com/bjackman/limmat/compare/v0.2.6...v0.2.7) - 2025-12-22
 
 ### Added

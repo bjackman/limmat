@@ -49,7 +49,7 @@
                 --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.bash ]}
             '';
           };
-          default = limmat-wrapped;
+          default = limmat;
         };
         devShells.default = pkgs.mkShell {
           inputsFrom = [ packages.limmat] ;

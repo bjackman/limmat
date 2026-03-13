@@ -45,7 +45,7 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.makeWrapper ];
             installPhase = ''
-              makeWrapper ${limmat}/bin/limmat $out/bin/limmat-wrapped \
+              makeWrapper ${limmat}/bin/limmat $out/bin/limmat \
                 --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.bash ]}
             '';
           };

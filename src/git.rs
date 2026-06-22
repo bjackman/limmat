@@ -172,6 +172,10 @@ impl Worktree for PersistentWorktree {
 pub struct Commit {
     pub hash: CommitHash,
     pub tree: TreeHash,
+    /// Hash of the blob at refs/notes/limmat:<hash>, if it exists.
+    /// This is not a standard part of a Commit but is used by Limmat to identify
+    /// the test configuration.
+    pub limmat_notes_hash: Option<Hash>,
 }
 
 impl Commit {
@@ -180,6 +184,7 @@ impl Commit {
         Self {
             hash: CommitHash::new("080b8ecbad3e34e55c5a035af80100f73b742a8d"),
             tree: TreeHash::new("6366d790125291272542a6b40f6fd3400e080821"),
+            limmat_notes_hash: None,
         }
     }
 }
@@ -204,23 +209,23 @@ static COMMAND_SEM: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(64));
 // This exists to try and avoid running into file descriptor exhaustion, without
 // needing any retry logic that would risk creating livelocks.
 #[derive(Debug)]
-struct GitCommand {
+pub struct GitCommand {
     _permit: SemaphorePermit<'static>,
     command: Command,
 }
 
 impl GitCommand {
-    fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut GitCommand {
+    pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut GitCommand {
         self.command.arg(arg);
         self
     }
 
-    fn args(&mut self, args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> &mut GitCommand {
+    pub fn args(&mut self, args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> &mut GitCommand {
         self.command.args(args);
         self
     }
 
-    async fn execute(&mut self) -> anyhow::Result<process::Output> {
+    pub async fn execute(&mut self) -> anyhow::Result<process::Output> {
         self.command.execute().await
     }
 
@@ -233,7 +238,7 @@ impl GitCommand {
 // inheritance-brained idea to use this Worktree kinda like a superclass was not
 // a very good one.  This trait is a workaround for that, to avoid linter
 // warnings from having a public method return a private type.
-trait WorktreePriv: Worktree {
+pub trait WorktreePriv: Worktree {
     // Convenience function to create a git command with some pre-filled args.
     // Returns a BoxFuture as an utterly mysterious workaround for what I
     // believe is a compiler bug:
@@ -488,9 +493,29 @@ pub trait Worktree: Debug + Sync {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        let hash = parts[0];
+        let tree = parts[1];
+
+        // Now fetch notes.
+        let notes_ref = format!("refs/notes/limmat:{}", hash);
+        let output = self
+            .git(["rev-parse", &notes_ref])
+            .await
+            .output()
+            .await
+            .context("failed to run 'git rev-parse' for notes")?;
+
+        // 128 means not found (ref doesn't exist).
+        let limmat_notes_hash = if output.status.success() {
+            Some(Hash::new(String::from_utf8(output.stdout)?.trim()))
+        } else {
+            None
+        };
+
         Ok(Some(Commit {
-            hash: CommitHash::new(parts[0]),
-            tree: TreeHash::new(parts[1]),
+            hash: CommitHash::new(hash),
+            tree: TreeHash::new(tree),
+            limmat_notes_hash,
         }))
     }
 }

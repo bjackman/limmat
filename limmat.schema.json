@@ -32,7 +32,8 @@
       "enum": [
         "no_caching",
         "by_commit",
-        "by_tree"
+        "by_tree",
+        "by_commit_with_notes"
       ]
     },
     "Command": {
